@@ -29,3 +29,6 @@ vite.config.ts.timestamp-*
 # Local dumps / debug
 *.log
 debug-*.json
+
+# Local brainstorming (not published)
+docs/FUTURE.md
