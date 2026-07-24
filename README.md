@@ -89,13 +89,6 @@ SvelteKit ──POST /api/hermes──► Hermes Agent (:8642)
 - Single shared URL key (not multi-user accounts)
 - Manual press-to-talk (not continuous server VAD)
 
-## Security
-
-- Never commit `.env`
-- Never put `XAI_API_KEY` or Hermes keys in the browser
-- Prefer nginx access logs that omit query strings (`?k=`)
-- This repo ships **no** production secrets or host-specific credentials
-
 ## Maintainer
 
 Maintained by **[Majorum Network](https://www.majorum.net)**.
