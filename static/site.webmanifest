@@ -1,0 +1,35 @@
+{
+	"name": "Hermes Voice",
+	"short_name": "Hermes",
+	"description": "Talk with Hermes",
+	"display": "standalone",
+	"orientation": "portrait",
+	"background_color": "#030a0c",
+	"theme_color": "#030a0c",
+	"icons": [
+		{
+			"src": "/icons/icon-192.png",
+			"sizes": "192x192",
+			"type": "image/png",
+			"purpose": "any"
+		},
+		{
+			"src": "/icons/icon-512.png",
+			"sizes": "512x512",
+			"type": "image/png",
+			"purpose": "any"
+		},
+		{
+			"src": "/icons/icon-maskable-192.png",
+			"sizes": "192x192",
+			"type": "image/png",
+			"purpose": "maskable"
+		},
+		{
+			"src": "/icons/icon-maskable-512.png",
+			"sizes": "512x512",
+			"type": "image/png",
+			"purpose": "maskable"
+		}
+	]
+}

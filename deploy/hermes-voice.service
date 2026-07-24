@@ -1,0 +1,25 @@
+[Unit]
+Description=Hermes Voice (SvelteKit)
+After=network.target
+
+[Service]
+Type=simple
+User=hermesvoice
+Group=hermesvoice
+WorkingDirectory=/opt/hermes-voice
+EnvironmentFile=/opt/hermes-voice/.env
+Environment=HOST=127.0.0.1
+Environment=PORT=4331
+# Override ORIGIN in EnvironmentFile (.env) — do not hardcode your domain here
+Environment=NODE_ENV=production
+# Adjust Node path to your install
+ExecStart=/usr/bin/node /opt/hermes-voice/build/index.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
