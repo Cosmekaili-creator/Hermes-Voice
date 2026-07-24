@@ -3,7 +3,7 @@
   Hermes Voice
 </h1>
 
-Private **realtime voice** web UI for [Hermes Agent](https://github.com/NousResearch/hermes-agent) — a thin layer that talks through **xAI Speech-to-Speech** and delegates tool-heavy work to your Hermes instance.
+Private **realtime voice** web UI for [Hermes Agent](https://github.com/NousResearch/hermes-agent) - a thin layer that talks through **xAI Speech-to-Speech** and delegates tool-heavy work to your Hermes instance.
 
 - Immediate chat / translation in voice (xAI realtime, voice `eve`)
 - Email, calendar, contacts, and other tool work → Hermes Agent API
@@ -14,7 +14,7 @@ Bring your own xAI key and Hermes instance.
 
 ## License
 
-[PolyForm Noncommercial 1.0.0](./LICENSE) — free for personal / non-commercial use.  
+[PolyForm Noncommercial 1.0.0](./LICENSE) - free for personal / non-commercial use.  
 Commercial use requires a separate license from the author.
 
 ## Requirements
