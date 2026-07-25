@@ -120,6 +120,7 @@ export const fr = {
 	'health.title': 'Santé propriétaire',
 	'health.voice': 'Accès vocal',
 	'health.xai': 'Mint xAI',
+	'health.openai': 'Mint OpenAI',
 	'health.hermes': 'Hermes',
 	'health.mic': 'Microphone',
 	'health.ok': 'OK',

@@ -1,6 +1,7 @@
 import { env } from '$env/dynamic/private';
 import { isIP } from 'node:net';
-import { probeMint } from '$lib/providers/xai/mint.server';
+import { probeMint as probeOpenAIMint } from '$lib/providers/openai/mint.server';
+import { probeMint as probeXaiMint } from '$lib/providers/xai/mint.server';
 
 const PROBE_TIMEOUT_MS = 5_000;
 
@@ -109,7 +110,14 @@ export function validateHermesApiBase(raw: string | null): HermesBaseCheck {
 
 export async function probeXai(apiKey?: string | null): Promise<ProbeResult> {
 	const key = nonEmpty(apiKey);
-	const result = await probeMint(key ?? undefined);
+	const result = await probeXaiMint(key ?? undefined);
+	if (!result.ok) return { ok: false, code: result.code };
+	return { ok: true };
+}
+
+export async function probeOpenAI(apiKey?: string | null): Promise<ProbeResult> {
+	const key = nonEmpty(apiKey);
+	const result = await probeOpenAIMint(key ?? undefined);
 	if (!result.ok) return { ok: false, code: result.code };
 	return { ok: true };
 }

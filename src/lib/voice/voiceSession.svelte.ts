@@ -3,9 +3,10 @@ import { getLocale, t, type MessageKey, type VoiceErrorCode } from '$lib/i18n';
 import { createMicCapture, type CaptureHandle } from './audioCapture';
 import { createPlayback, type PlaybackHandle } from './audioPlayback';
 import { buildHermesVoiceInstructions } from './instructions';
+import type { ProviderId } from '$lib/providers/types';
 import { PROVIDER_PCM_RATE } from './pcm';
 import {
-	createRealtimeClient,
+	createRealtimeClientFor,
 	type RealtimeClient,
 	type RealtimeServerEvent,
 	type TurnDetection
@@ -65,7 +66,17 @@ const WAIT_TICK_MS = 1000;
 const WAIT_PHRASE_EVERY_TICKS = 4;
 const WARM_RECHECK_MS = 60_000;
 
-type MintResult = { value: string; expires_at: number };
+type MintResult = {
+	value: string;
+	expires_at: number;
+	provider: ProviderId;
+	model: string;
+	voice: string;
+};
+
+function isProviderId(value: unknown): value is ProviderId {
+	return value === 'xai' || value === 'openai';
+}
 
 function isTalkMode(value: unknown): value is TalkMode {
 	return value === 'ptt' || value === 'handsfree';
@@ -416,13 +427,25 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 			if (res.status === 500) throw new VoiceAppError('error.sessionUnavailable', true);
 			throw new VoiceAppError('error.sessionRequestFailed', true);
 		}
-		const body = (await res.json()) as { value?: string; expires_at?: number };
+		const body = (await res.json()) as {
+			value?: string;
+			expires_at?: number;
+			provider?: string;
+			model?: string;
+			voice?: string;
+		};
 		if (typeof body.value !== 'string' || body.value.length === 0) {
+			throw new VoiceAppError('error.sessionUnavailable', true);
+		}
+		if (!isProviderId(body.provider)) {
 			throw new VoiceAppError('error.sessionUnavailable', true);
 		}
 		return {
 			value: body.value,
-			expires_at: typeof body.expires_at === 'number' ? body.expires_at : 0
+			expires_at: typeof body.expires_at === 'number' ? body.expires_at : 0,
+			provider: body.provider,
+			model: typeof body.model === 'string' && body.model.trim() ? body.model.trim() : '',
+			voice: typeof body.voice === 'string' && body.voice.trim() ? body.voice.trim() : ''
 		};
 	}
 
@@ -687,23 +710,35 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 
 			token = await mintSession();
 			if (destroyed) throw new Error('destroyed');
-			const rt = createRealtimeClient({
-				onEvent: (ev) => handleServerEvent(ev, turnId),
-				onError: (message) => {
-					if (destroyed) return;
-					if (state !== 'idle' || handsfreeArmed) {
-						const mapped = CONNECT_ERROR_CODES[message as keyof typeof CONNECT_ERROR_CODES];
-						if (mapped) fail(mapped);
-						else failRaw(message);
+			const rt = createRealtimeClientFor(
+				token.provider,
+				{
+					onEvent: (ev) => handleServerEvent(ev, turnId),
+					onError: (message) => {
+						if (destroyed) return;
+						if (state !== 'idle' || handsfreeArmed) {
+							const mapped = CONNECT_ERROR_CODES[message as keyof typeof CONNECT_ERROR_CODES];
+							if (mapped) fail(mapped);
+							else failRaw(message);
+						}
+					},
+					onClose: () => {
+						if (destroyed) return;
+						if (
+							state === 'listening' ||
+							state === 'thinking' ||
+							state === 'speaking' ||
+							handsfreeArmed
+						) {
+							fail('error.connectionLost', { reconnect: true });
+						}
 					}
 				},
-				onClose: () => {
-					if (destroyed) return;
-					if (state === 'listening' || state === 'thinking' || state === 'speaking' || handsfreeArmed) {
-						fail('error.connectionLost', { reconnect: true });
-					}
+				{
+					model: token.model || undefined,
+					voice: token.voice || undefined
 				}
-			});
+			);
 			try {
 				await rt.connect(
 					token.value,

@@ -23,7 +23,13 @@ export default defineConfig({
 					'img-src': ['self', 'data:'],
 					'media-src': ['self', 'blob:'],
 					'font-src': ['self'],
-					'connect-src': ['self', 'https://api.x.ai', 'wss://api.x.ai'],
+					'connect-src': [
+						'self',
+						'https://api.x.ai',
+						'wss://api.x.ai',
+						'https://api.openai.com',
+						'wss://api.openai.com'
+					],
 					'object-src': ['none'],
 					'base-uri': ['self'],
 					'form-action': ['self'],

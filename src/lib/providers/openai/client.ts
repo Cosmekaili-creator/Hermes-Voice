@@ -17,10 +17,25 @@ export type {
 	WireTurnDetection
 };
 
+/** Map legacy / alias event names onto the GA names voiceSession switches on. */
+function normalizeServerEvent(event: RealtimeServerEvent): RealtimeServerEvent {
+	const type = event.type;
+	if (type === 'response.audio.delta') {
+		return { ...event, type: 'response.output_audio.delta' };
+	}
+	if (type === 'response.audio_transcript.delta') {
+		return { ...event, type: 'response.output_audio_transcript.delta' };
+	}
+	if (type === 'response.audio.done') {
+		return { ...event, type: 'response.output_audio.done' };
+	}
+	return event;
+}
+
 /**
- * Browser WebSocket client for xAI realtime.
- * Auth via subprotocol `xai-client-secret.<ephemeral>` (browsers cannot set Authorization).
- * Waits for `session.updated` before resolving connect (append only after ready).
+ * Browser WebSocket client for OpenAI Realtime (GA).
+ * Auth via subprotocols `realtime` + `openai-insecure-api-key.<ephemeral>`.
+ * session.update uses nested audio.input.turn_detection / audio.output.voice.
  *
  * Caches last instructions + turn_detection so locale refresh / partial updates
  * never reset VAD back to null.
@@ -41,14 +56,20 @@ export function createRealtimeClient(
 		return {
 			type: 'session.update',
 			session: {
+				type: 'realtime',
 				model,
-				voice,
 				instructions: cachedInstructions,
-				turn_detection: cachedTurnDetection,
+				output_modalities: ['audio'],
 				tools: [...VOICE_TOOLS],
 				audio: {
-					input: { format: { type: 'audio/pcm', rate: PCM_RATE } },
-					output: { format: { type: 'audio/pcm', rate: PCM_RATE } }
+					input: {
+						format: { type: 'audio/pcm', rate: PCM_RATE },
+						turn_detection: cachedTurnDetection
+					},
+					output: {
+						format: { type: 'audio/pcm', rate: PCM_RATE },
+						voice
+					}
 				}
 			}
 		};
@@ -113,7 +134,10 @@ export function createRealtimeClient(
 
 			let sock: WebSocket;
 			try {
-				sock = new WebSocket(realtimeUrl(model), [`xai-client-secret.${token}`]);
+				sock = new WebSocket(realtimeUrl(model), [
+					'realtime',
+					`openai-insecure-api-key.${token}`
+				]);
 			} catch (err) {
 				reject(err instanceof Error ? err : new Error('websocketFailed'));
 				return;
@@ -139,9 +163,10 @@ export function createRealtimeClient(
 					return;
 				}
 
-				handlers.onEvent?.(event);
+				const normalized = normalizeServerEvent(event);
+				handlers.onEvent?.(normalized);
 
-				if (event.type === 'session.updated') {
+				if (normalized.type === 'session.updated') {
 					ready = true;
 					if (!settled) {
 						settled = true;
@@ -151,9 +176,9 @@ export function createRealtimeClient(
 					return;
 				}
 
-				if (event.type === 'error') {
+				if (normalized.type === 'error') {
 					const msg =
-						(typeof event.error?.message === 'string' && event.error.message) ||
+						(typeof normalized.error?.message === 'string' && normalized.error.message) ||
 						'realtimeSessionError';
 					handlers.onError?.(msg);
 					if (!settled) {

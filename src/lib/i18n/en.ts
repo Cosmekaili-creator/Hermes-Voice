@@ -114,6 +114,7 @@ export const en = {
 	'health.title': 'Owner health',
 	'health.voice': 'Voice gate',
 	'health.xai': 'xAI mint',
+	'health.openai': 'OpenAI mint',
 	'health.hermes': 'Hermes',
 	'health.mic': 'Microphone',
 	'health.ok': 'OK',

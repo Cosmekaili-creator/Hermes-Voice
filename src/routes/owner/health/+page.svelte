@@ -22,8 +22,9 @@
 
 	let loading = $state(false);
 	let multiUser = $state(false);
+	let provider = $state<'xai' | 'openai'>('xai');
 	let voice = $state<Check | null>(null);
-	let xai = $state<Check | null>(null);
+	let voiceProvider = $state<Check | null>(null);
 	let hermes = $state<Check | null>(null);
 	let users = $state<UserHealth[]>([]);
 	let micHint = $state<'unknown' | 'ok' | 'denied'>('unknown');
@@ -35,15 +36,21 @@
 			const res = await fetch('/api/owner/health', { credentials: 'same-origin' });
 			const json = (await res.json().catch(() => null)) as null | {
 				multiUser?: boolean;
+				provider?: string;
 				voice?: Check;
+				voiceProvider?: Check;
 				xai?: Check;
+				openai?: Check;
 				hermes?: Check;
 				users?: UserHealth[];
 			};
 			if (json) {
 				multiUser = Boolean(json.multiUser);
+				provider = json.provider === 'openai' ? 'openai' : 'xai';
 				voice = json.voice ?? null;
-				xai = json.xai ?? null;
+				voiceProvider =
+					json.voiceProvider ??
+					(provider === 'openai' ? (json.openai ?? null) : (json.xai ?? null));
 				hermes = json.hermes ?? null;
 				users = json.users ?? [];
 			}
@@ -104,8 +111,11 @@
 					</li>
 				{/if}
 				<li>
-					<span>{t('health.xai', locale)}</span>
-					<strong class:ok={xai?.ok} class:fail={xai && !xai.ok}>{statusLabel(xai)}</strong>
+					<span>{provider === 'openai' ? t('health.openai', locale) : t('health.xai', locale)}</span>
+					<strong
+						class:ok={voiceProvider?.ok}
+						class:fail={voiceProvider && !voiceProvider.ok}>{statusLabel(voiceProvider)}</strong
+					>
 				</li>
 				{#if multiUser}
 					{#each users as u (u.id)}

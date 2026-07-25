@@ -1,4 +1,5 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
+import { getActiveProvider } from '$lib/providers/active.server';
 import { requireOwner, requireVoiceKey } from '$lib/server/auth';
 import {
 	ensureBindingsImported,
@@ -6,8 +7,12 @@ import {
 	readEnvTrimmed,
 	redactBinding
 } from '$lib/server/bindings.server';
-import { probeHermes, probeXai } from '$lib/server/setupProbes.server';
+import { probeHermes, probeOpenAI, probeXai } from '$lib/server/setupProbes.server';
 import { isSetupComplete } from '$lib/server/setupMode.server';
+
+function probeField(result: { ok: true } | { ok: false; code: string }) {
+	return result.ok ? { ok: true as const } : { ok: false as const, code: result.code };
+}
 
 export const GET: RequestHandler = async (event) => {
 	if (isMultiUserMode()) {
@@ -16,8 +21,16 @@ export const GET: RequestHandler = async (event) => {
 		await requireVoiceKey(event);
 	}
 
-	const xaiKey = readEnvTrimmed('XAI_API_KEY');
-	const xai = await probeXai(xaiKey);
+	const provider = getActiveProvider();
+	const voiceProbe =
+		provider === 'openai'
+			? await probeOpenAI(readEnvTrimmed('OPENAI_API_KEY'))
+			: await probeXai(readEnvTrimmed('XAI_API_KEY'));
+	const voiceProvider = probeField(voiceProbe);
+	const providerFields =
+		provider === 'openai'
+			? { openai: voiceProvider }
+			: { xai: voiceProvider };
 
 	if (!isMultiUserMode()) {
 		const hermes = await probeHermes({
@@ -25,13 +38,15 @@ export const GET: RequestHandler = async (event) => {
 			hermesApiKey: readEnvTrimmed('HERMES_API_KEY')
 		});
 		return json({
-			ok: xai.ok && hermes.ok,
+			ok: voiceProvider.ok && hermes.ok,
 			multiUser: false,
 			setupComplete: isSetupComplete(),
+			provider,
 			voice: {
 				ok: Boolean(readEnvTrimmed('VOICE_URL_KEY'))
 			},
-			xai: xai.ok ? { ok: true } : { ok: false, code: xai.code },
+			voiceProvider,
+			...providerFields,
 			hermes: hermes.ok ? { ok: true } : { ok: false, code: hermes.code }
 		});
 	}
@@ -42,7 +57,9 @@ export const GET: RequestHandler = async (event) => {
 			ok: false,
 			multiUser: true,
 			setupComplete: isSetupComplete(),
-			xai: xai.ok ? { ok: true } : { ok: false, code: xai.code },
+			provider,
+			voiceProvider,
+			...providerFields,
 			bindings: { ok: false, code: imported.code },
 			users: []
 		});
@@ -65,10 +82,12 @@ export const GET: RequestHandler = async (event) => {
 	}
 
 	return json({
-		ok: xai.ok && allHermesOk && imported.file.users.length > 0,
+		ok: voiceProvider.ok && allHermesOk && imported.file.users.length > 0,
 		multiUser: true,
 		setupComplete: isSetupComplete(),
-		xai: xai.ok ? { ok: true } : { ok: false, code: xai.code },
+		provider,
+		voiceProvider,
+		...providerFields,
 		users
 	});
 };

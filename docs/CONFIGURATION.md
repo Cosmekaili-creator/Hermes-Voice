@@ -5,7 +5,11 @@ Copy `.env.example` → `.env` (never commit `.env`).
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `VOICE_URL_KEY` | yes | Shared secret. Open the app as `https://your-host/?k=<value>` once; sets an HttpOnly session cookie. Also accepted on `/api/*` as body `k`. |
-| `XAI_API_KEY` | yes (for talk) | Server-only xAI API key. Mints ephemeral realtime client secrets; the browser never sees this key. |
+| `VOICE_PROVIDER` | optional | Active realtime provider: `xai` (default) or `openai`. Unset / invalid → `xai`. Ops-level switch for the whole process (all users share it). |
+| `XAI_API_KEY` | yes (when provider is xAI) | Server-only xAI API key. Mints ephemeral realtime client secrets; the browser never sees this key. |
+| `OPENAI_API_KEY` | yes (when provider is OpenAI) | Server-only OpenAI API key. Mints ephemeral realtime client secrets; the browser never sees this key. |
+| `OPENAI_REALTIME_MODEL` | optional | OpenAI realtime model override (default `gpt-realtime`). Resolved on the server only. |
+| `OPENAI_VOICE` | optional | OpenAI output voice override (default `alloy`). Resolved on the server only. |
 | `HERMES_API_BASE` | yes (for tools) | Base URL of Hermes Agent’s OpenAI-compatible API (default `http://127.0.0.1:8642`). |
 | `HERMES_API_KEY` | yes (for tools) | Must match Hermes `API_SERVER_KEY`. |
 | `HERMES_SESSION_KEY` | recommended | Stable memory scope header for Hermes (e.g. `agent:main:voice`). |
@@ -28,7 +32,7 @@ With `MULTI_USER=1`:
 | Store | JSON bindings (`version: 1`, `users[]`) — not N keys in `.env` |
 | Auth | Per-user URL key (`?k=` / cookie HMAC of that key). Disabled rows fail closed. |
 | Hermes | Each user row has its own `hermesApiBase` / `hermesApiKey` / `hermesSessionKey` (required; default `agent:main:voice`). **No env Hermes fallback** while multi-user is on. |
-| xAI | Shared `XAI_API_KEY` for all users |
+| Voice provider | Shared active provider key (`XAI_API_KEY` or `OPENAI_API_KEY` per `VOICE_PROVIDER`) for all users |
 | Roles | Exactly one `owner` (admin + setup rotation); `user` = Lounge / session / hermes only |
 | Wizard | Still single-binding bootstrap/rotation; owner rotation syncs the owner row + `.env` |
 | Enable | `/owner/users` → Enable (or set `MULTI_USER=1` and restart). Imports env as owner row #1 when the store is empty. |
@@ -65,15 +69,17 @@ systemd `ProtectSystem=strict` needs `ReadWritePaths=` on the `.env` parent for 
 
 ## Voice provider
 
-**Active provider:** `xai` only (`getActiveProvider()` in `src/lib/providers/`). Adapter seam lives under `src/lib/providers/`; no vendor picker in the UI yet.
+**Active provider:** `VOICE_PROVIDER=xai|openai` (default `xai`), resolved server-side in `src/lib/providers/active.server.ts`. The wizard remains xAI-first; OpenAI is an ops env switch. There is no per-user or Lounge provider picker — multi-user shares the process-wide provider key.
 
-| | xAI |
-|--|-----|
-| Model / voice | `grok-voice-latest` / `eve` |
-| PCM | 24 kHz |
-| Mint | Ephemeral client secret (`POST /api/session` → `api.x.ai` `client_secrets`) |
-| Transport | Browser WebSocket `wss://api.x.ai` with `xai-client-secret.*` subprotocol |
-| Server VAD | Yes (hands-free talk mode) |
-| Tools | Yes (`ask_hermes` via `session.update`) |
+`POST /api/session` returns `{ value, expires_at, provider, model, voice }` (ephemeral token + non-secret connect hints). Model/voice env overrides are never read in the browser.
 
-Capability matrix stub: `src/lib/providers/matrix.ts` (`CAPABILITY_MATRIX` / `getActiveCapabilities()`).
+| | xAI (default) | OpenAI |
+|--|---------------|--------|
+| Model / voice | `grok-voice-latest` / `eve` | `gpt-realtime` / `alloy` (overridable via `OPENAI_REALTIME_MODEL` / `OPENAI_VOICE`) |
+| PCM | 24 kHz | 24 kHz |
+| Mint | `POST /api/session` → `api.x.ai` `client_secrets` | `POST /api/session` → `api.openai.com` `client_secrets` (binds `session.type` + model) |
+| Transport | Browser WebSocket `wss://api.x.ai` with `xai-client-secret.*` | Browser WebSocket `wss://api.openai.com` with `realtime` + `openai-insecure-api-key.*` |
+| Server VAD | Yes (hands-free talk mode) | Yes (`audio.input.turn_detection`) |
+| Tools | Yes (`ask_hermes` via `session.update`) | Yes (same tool path) |
+
+Capability matrix: `src/lib/providers/matrix.ts` (`CAPABILITY_MATRIX`). Thin probes: `POST /api/setup/test/xai` and `POST /api/setup/test/openai` (no OpenAI wizard step).

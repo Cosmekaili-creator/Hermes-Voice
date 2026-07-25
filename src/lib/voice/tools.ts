@@ -1,4 +1,4 @@
-/** Client tool registered on xAI session.update — browser executes via POST /api/hermes. */
+/** Client tool registered on provider session.update — browser executes via POST /api/hermes. */
 export const ASK_HERMES_TOOL = {
 	type: 'function',
 	name: 'ask_hermes',

@@ -4,7 +4,7 @@
  * rate, linearly resample to/from the provider rate.
  */
 
-import { PCM_RATE } from '$lib/providers/xai/constants';
+import { PCM_RATE } from '$lib/providers/pcm';
 
 export const PROVIDER_PCM_RATE = PCM_RATE;
 
