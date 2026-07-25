@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
+	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
 	import { getLocale, t, type Locale } from '$lib/i18n';
@@ -10,11 +11,21 @@
 	const locale = $derived((browser ? getLocale() : page.data.locale) as Locale);
 
 	type Check = { ok: boolean; code?: string };
+	type UserHealth = {
+		id: string;
+		label: string;
+		role: string;
+		enabled: boolean;
+		hermesApiBase: string;
+		hermes: Check;
+	};
 
 	let loading = $state(false);
+	let multiUser = $state(false);
 	let voice = $state<Check | null>(null);
 	let xai = $state<Check | null>(null);
 	let hermes = $state<Check | null>(null);
+	let users = $state<UserHealth[]>([]);
 	let micHint = $state<'unknown' | 'ok' | 'denied'>('unknown');
 
 	async function refresh() {
@@ -23,14 +34,18 @@
 		try {
 			const res = await fetch('/api/owner/health', { credentials: 'same-origin' });
 			const json = (await res.json().catch(() => null)) as null | {
+				multiUser?: boolean;
 				voice?: Check;
 				xai?: Check;
 				hermes?: Check;
+				users?: UserHealth[];
 			};
 			if (json) {
+				multiUser = Boolean(json.multiUser);
 				voice = json.voice ?? null;
 				xai = json.xai ?? null;
 				hermes = json.hermes ?? null;
+				users = json.users ?? [];
 			}
 		} finally {
 			loading = false;
@@ -58,7 +73,9 @@
 	function statusLabel(check: Check | null): string {
 		if (loading && !check) return t('health.checking', locale);
 		if (!check) return '—';
-		return check.ok ? t('health.ok', locale) : `${t('health.fail', locale)}${check.code ? ` (${check.code})` : ''}`;
+		return check.ok
+			? t('health.ok', locale)
+			: `${t('health.fail', locale)}${check.code ? ` (${check.code})` : ''}`;
 	}
 </script>
 
@@ -72,21 +89,39 @@
 
 		{#if !data.authenticated}
 			<p class="body">{t('health.needAuth', locale)}</p>
-			<a class="link" href="/">{t('wizard.openLounge', locale)}</a>
+			<a class="link" href={resolve('/')}>{t('wizard.openLounge', locale)}</a>
 		{:else}
+			<div class="nav">
+				<a class="link" href={resolve('/owner/users')}>{t('health.linkUsers', locale)}</a>
+				<a class="link" href={resolve('/setup')}>{t('health.backSetup', locale)}</a>
+			</div>
+
 			<ul class="checks">
-				<li>
-					<span>{t('health.voice', locale)}</span>
-					<strong class:ok={voice?.ok} class:fail={voice && !voice.ok}>{statusLabel(voice)}</strong>
-				</li>
+				{#if !multiUser}
+					<li>
+						<span>{t('health.voice', locale)}</span>
+						<strong class:ok={voice?.ok} class:fail={voice && !voice.ok}>{statusLabel(voice)}</strong>
+					</li>
+				{/if}
 				<li>
 					<span>{t('health.xai', locale)}</span>
 					<strong class:ok={xai?.ok} class:fail={xai && !xai.ok}>{statusLabel(xai)}</strong>
 				</li>
-				<li>
-					<span>{t('health.hermes', locale)}</span>
-					<strong class:ok={hermes?.ok} class:fail={hermes && !hermes.ok}>{statusLabel(hermes)}</strong>
-				</li>
+				{#if multiUser}
+					{#each users as u (u.id)}
+						<li>
+							<span>{u.label} · Hermes</span>
+							<strong class:ok={u.hermes?.ok} class:fail={u.hermes && !u.hermes.ok}
+								>{statusLabel(u.hermes)}</strong
+							>
+						</li>
+					{/each}
+				{:else}
+					<li>
+						<span>{t('health.hermes', locale)}</span>
+						<strong class:ok={hermes?.ok} class:fail={hermes && !hermes.ok}>{statusLabel(hermes)}</strong>
+					</li>
+				{/if}
 				<li>
 					<span>{t('health.mic', locale)}</span>
 					<strong class:ok={micHint === 'ok'} class:fail={micHint === 'denied'}>
@@ -106,7 +141,6 @@
 				<button type="button" class="btn ghost" onclick={checkMic}
 					>{t('health.micCheck', locale)}</button
 				>
-				<a class="link" href="/setup">{t('health.backSetup', locale)}</a>
 			</div>
 		{/if}
 	</div>
@@ -193,6 +227,12 @@
 		color: var(--muted);
 		text-align: center;
 		line-height: 1.45;
+	}
+
+	.nav {
+		display: flex;
+		gap: 1rem;
+		justify-content: center;
 	}
 
 	.checks {

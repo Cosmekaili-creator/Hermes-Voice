@@ -5,6 +5,12 @@ declare global {
 		// interface Error {}
 		interface Locals {
 			locale: import('$lib/i18n').Locale;
+			/** Non-secret principal from Lounge cookie/key — never includes voice/Hermes secrets. */
+			principal?: {
+				id: string;
+				role: 'owner' | 'user';
+				label: string;
+			} | null;
 		}
 		// interface PageData {}
 		// interface PageState {}

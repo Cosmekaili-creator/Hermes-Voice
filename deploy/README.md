@@ -36,8 +36,18 @@ Set `ORIGIN` in `.env` to your public HTTPS origin.
 5. `sudo systemctl restart hermes-voice` (required — disk write does not reload process env).
 6. Open the Lounge with `/?k=<VOICE_URL_KEY>`. Owner probes: `/owner/health` (URL-key session). Public `GET /health` stays liveness-only.
 
+### Multi-user (optional)
+
+1. Finish single-user setup first (`SETUP_COMPLETE=1`, working Lounge).
+2. Uncomment `ReadWritePaths=/opt/hermes-voice` so the unit can write `.env` **and** `data/bindings.json`.
+3. Enable via `/owner/users` (writes `MULTI_USER=1` + imports owner) or set `MULTI_USER=1` in `.env` and restart.
+4. Add users under `/owner/users` — each row needs its own Hermes profile base URL + API key.
+5. **Ops cost:** N Voice users ≈ N Hermes profile processes (ports, keys, `HERMES_HOME`). Shared xAI only.
+
 ## Hermes Agent
 
 Hermes must expose its OpenAI-compatible API on a URL reachable **only by this app** (usually loopback), e.g. `http://127.0.0.1:8642`.
 
 On the Hermes side (typical Docker install), enable the API server and set `API_SERVER_KEY` to the same value as this app’s `HERMES_API_KEY`. Do **not** publish Hermes’s API port on the public internet.
+
+For multi-user, run **one Hermes profile (API port + key) per Voice user** — isolation is the profile, not session keys alone.

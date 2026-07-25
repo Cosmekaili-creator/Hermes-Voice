@@ -12,6 +12,14 @@ import {
 	revokeBootstrapInProcess
 } from '$lib/server/setupMode.server';
 import { clearSessionCookie } from '$lib/server/auth';
+import {
+	ensureBindingsImported,
+	findOwner,
+	isMultiUserMode,
+	voiceKeyTaken,
+	writeBindingsAtomic,
+	type Binding
+} from '$lib/server/bindings.server';
 import { validateHermesApiBase } from '$lib/server/setupProbes.server';
 
 function strField(body: unknown, key: string): string | null {
@@ -27,7 +35,7 @@ function existing(key: string): string {
 
 export const POST: RequestHandler = async (event) => {
 	const body = await event.request.json().catch(() => ({}));
-	requireSetupOrOwner(event, body);
+	await requireSetupOrOwner(event, body);
 
 	const mode = getSetupMode();
 	const rotation = mode === 'complete';
@@ -67,6 +75,24 @@ export const POST: RequestHandler = async (event) => {
 		return json({ ok: false, code: baseCheck.code }, { status: 400 });
 	}
 
+	// Multi-user: validate owner sync *before* env write so a voiceKey collision
+	// cannot leave .env and bindings divergent.
+	let multiUserOwnerSync: { ownerId: string; users: Binding[] } | null = null;
+	if (isMultiUserMode()) {
+		const imported = await ensureBindingsImported();
+		if (!imported.ok) {
+			return json({ ok: false, code: imported.code }, { status: 503 });
+		}
+		const owner = findOwner(imported.file.users);
+		if (!owner) {
+			return json({ ok: false, code: 'bindings_no_owner' }, { status: 500 });
+		}
+		if (voiceKeyTaken(imported.file.users, nextVoice, owner.id)) {
+			return json({ ok: false, code: 'voice_key_taken' }, { status: 400 });
+		}
+		multiUserOwnerSync = { ownerId: owner.id, users: imported.file.users };
+	}
+
 	const updates: EnvUpdates = {
 		VOICE_URL_KEY: nextVoice,
 		XAI_API_KEY: nextXai,
@@ -85,16 +111,32 @@ export const POST: RequestHandler = async (event) => {
 		updates.SETUP_TOKEN = null;
 	}
 
-	// Blank rotation fields already resolved to existing; only write submitted managed keys.
-	// For rotation, omit keys the client left blank that we kept from env (still write resolved values
-	// so file stays consistent). Always write the resolved set above.
-
 	const written = await writeEnvFileAtomic(updates);
 	if (!written.ok) {
 		return json({ ok: false, code: 'env_write_failed' }, { status: 500 });
 	}
 
 	applyEnvUpdatesInProcess(updates);
+
+	if (multiUserOwnerSync) {
+		const now = new Date().toISOString();
+		const nextUsers = multiUserOwnerSync.users.map((u) =>
+			u.id === multiUserOwnerSync.ownerId
+				? {
+						...u,
+						voiceKey: nextVoice,
+						hermesApiBase: baseCheck.base,
+						hermesApiKey: nextHermesKey,
+						hermesSessionKey: nextSession,
+						updatedAt: now
+					}
+				: u
+		);
+		const bw = await writeBindingsAtomic({ version: 1, users: nextUsers });
+		if (!bw.ok) {
+			return json({ ok: false, code: 'bindings_write_failed' }, { status: 500 });
+		}
+	}
 
 	if (!rotation) {
 		revokeBootstrapInProcess();

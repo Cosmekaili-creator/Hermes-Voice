@@ -4,7 +4,7 @@ import { callHermesChat } from '$lib/server/hermes';
 
 export const POST: RequestHandler = async (event) => {
 	const body = await event.request.json().catch(() => ({}));
-	requireVoiceKey(event, body);
+	const binding = await requireVoiceKey(event, body);
 
 	const request =
 		body && typeof body === 'object' && 'request' in body
@@ -22,7 +22,10 @@ export const POST: RequestHandler = async (event) => {
 	const { text } = await callHermesChat({
 		request,
 		sessionId,
-		signal: event.request.signal
+		signal: event.request.signal,
+		hermesApiBase: binding.hermesApiBase,
+		hermesApiKey: binding.hermesApiKey,
+		hermesSessionKey: binding.hermesSessionKey
 	});
 	return json({ text });
 };

@@ -14,6 +14,28 @@ Copy `.env.example` → `.env` (never commit `.env`).
 | `SETUP_TOKEN` | first-run | Bootstrap unlock for `/setup`. Ignored when `SETUP_COMPLETE=1`. |
 | `SETUP_COMPLETE` | lock | Set to `1` after wizard save (or manually) to hard-lock bootstrap. |
 | `ENV_FILE` | optional | Absolute path to the `.env` file the wizard writes. Default: `<cwd>/.env`. **Must match** systemd `EnvironmentFile=` (e.g. `/opt/hermes-voice/.env`) or saves will not apply after restart. |
+| `MULTI_USER` | optional | Set to `1` for multi-user mode (Voice user → Hermes profile binding). Unset / any other value = single-user (today’s env binding). |
+| `BINDINGS_FILE` | optional | Path to bindings JSON (mode `600`). Default: `<cwd>/data/bindings.json` (prod example: `/opt/hermes-voice/data/bindings.json`). |
+
+## Multi-user (Solution B)
+
+Default is **single-user**: one `VOICE_URL_KEY` and one Hermes trio in `.env`. No bindings file required.
+
+With `MULTI_USER=1`:
+
+| | Behavior |
+|--|----------|
+| Store | JSON bindings (`version: 1`, `users[]`) — not N keys in `.env` |
+| Auth | Per-user URL key (`?k=` / cookie HMAC of that key). Disabled rows fail closed. |
+| Hermes | Each user row has its own `hermesApiBase` / `hermesApiKey` / `hermesSessionKey` (required; default `agent:main:voice`). **No env Hermes fallback** while multi-user is on. |
+| xAI | Shared `XAI_API_KEY` for all users |
+| Roles | Exactly one `owner` (admin + setup rotation); `user` = Lounge / session / hermes only |
+| Wizard | Still single-binding bootstrap/rotation; owner rotation syncs the owner row + `.env` |
+| Enable | `/owner/users` → Enable (or set `MULTI_USER=1` and restart). Imports env as owner row #1 when the store is empty. |
+| Disable | Syncs owner → `.env`, clears `MULTI_USER`; single-user env auth works again |
+| Ops cost | **N Voice users ≈ N Hermes profile processes** (ports, API keys, `HERMES_HOME`). Do not hide this cost. See [Hermes Profiles](https://hermes-agent.nousresearch.com/docs/user-guide/profiles). |
+
+systemd `ProtectSystem=strict` needs `ReadWritePaths=` covering both `.env` and `data/` — see `deploy/hermes-voice.service`.
 
 ## First-run setup wizard
 
@@ -36,8 +58,9 @@ systemd `ProtectSystem=strict` needs `ReadWritePaths=` on the `.env` parent for 
 
 - Prefer keeping `?k=` on PWA home-screen shortcuts; some mobile WebViews drop cookies.
 - `/health` is unauthenticated (liveness only).
-- Owner readiness: authenticated `GET /owner/health` + `GET /api/owner/health` (mint + Hermes probes; mic hint is client-only).
-- Rotate `VOICE_URL_KEY` via `/setup` (owner session) or by editing `.env` and restarting; existing cookies become invalid.
+- Owner readiness: authenticated `GET /owner/health` + `GET /api/owner/health` (mint + Hermes probes; mic hint is client-only). In multi-user, owner-only; health lists per-binding Hermes.
+- User admin (multi-user): `/owner/users` + `/api/owner/users` (owner-only). Secrets redacted in list responses.
+- Rotate `VOICE_URL_KEY` via `/setup` (owner session) or by editing `.env` / owner row and restarting; existing cookies become invalid.
 - Recovery if locked-complete with broken keys: edit `.env` manually, or unset `SETUP_COMPLETE` and set a new `SETUP_TOKEN`, then restart.
 
 ## Voice provider

@@ -4,7 +4,7 @@ import { probeOrigin } from '$lib/server/setupProbes.server';
 
 export const POST: RequestHandler = async (event) => {
 	const body = await event.request.json().catch(() => ({}));
-	requireSetupOrOwner(event, body);
+	await requireSetupOrOwner(event, body);
 
 	const origin =
 		body && typeof body === 'object' && body !== null && 'origin' in body

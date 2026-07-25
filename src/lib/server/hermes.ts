@@ -1,16 +1,9 @@
-import { env } from '$env/dynamic/private';
 import { error } from '@sveltejs/kit';
 import { redactForLog } from '$lib/server/logRedact';
 
-const DEFAULT_BASE = 'http://127.0.0.1:8642';
 const HERMES_TIMEOUT_MS = 120_000;
 
 export type HermesChatResult = { text: string };
-
-function hermesBase(): string {
-	const raw = env.HERMES_API_BASE?.trim();
-	return raw && raw.length > 0 ? raw.replace(/\/$/, '') : DEFAULT_BASE;
-}
 
 function extractAssistantText(parsed: unknown): string {
 	if (!parsed || typeof parsed !== 'object') return '';
@@ -39,17 +32,22 @@ function extractAssistantText(parsed: unknown): string {
 
 /**
  * Call Hermes Agent OpenAI-compatible chat completions (tools run server-side).
- * Never logs HERMES_API_KEY / HERMES_SESSION_KEY.
+ * Credentials required from resolved binding — zero env.HERMES_* reads.
+ * Never logs hermesApiKey / hermesSessionKey.
  */
 export async function callHermesChat(opts: {
 	request: string;
 	sessionId?: string;
 	/** Browser disconnect / user cancel — composed with the 120s timeout. */
 	signal?: AbortSignal;
+	hermesApiBase: string;
+	hermesApiKey: string;
+	hermesSessionKey: string;
 }): Promise<HermesChatResult> {
-	const apiKey = env.HERMES_API_KEY?.trim();
-	const sessionKey = env.HERMES_SESSION_KEY?.trim();
-	if (!apiKey || !sessionKey) {
+	const apiKey = opts.hermesApiKey.trim();
+	const sessionKey = opts.hermesSessionKey.trim();
+	const base = opts.hermesApiBase.trim().replace(/\/$/, '');
+	if (!apiKey || !sessionKey || !base) {
 		error(500, 'Hermes bridge unavailable');
 	}
 
@@ -68,7 +66,7 @@ export async function callHermesChat(opts: {
 		headers['X-Hermes-Session-Id'] = sessionId.slice(0, 256);
 	}
 
-	const url = `${hermesBase()}/v1/chat/completions`;
+	const url = `${base}/v1/chat/completions`;
 	const timeout = AbortSignal.timeout(HERMES_TIMEOUT_MS);
 	const signal =
 		opts.signal && typeof AbortSignal.any === 'function'

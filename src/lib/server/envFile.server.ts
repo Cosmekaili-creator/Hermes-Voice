@@ -17,7 +17,8 @@ export const MANAGED_ENV_KEYS = [
 	'HERMES_SESSION_KEY',
 	'ORIGIN',
 	'SETUP_COMPLETE',
-	'SETUP_TOKEN'
+	'SETUP_TOKEN',
+	'MULTI_USER'
 ] as const;
 
 export type ManagedEnvKey = (typeof MANAGED_ENV_KEYS)[number];

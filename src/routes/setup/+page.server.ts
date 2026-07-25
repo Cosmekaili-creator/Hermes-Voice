@@ -6,15 +6,15 @@ import {
 	setupPageFlags
 } from '$lib/server/setupMode.server';
 
-export const load: PageServerLoad = (event) => {
-	const flags = setupPageFlags(event);
+export const load: PageServerLoad = async (event) => {
+	const flags = await setupPageFlags(event);
 
 	// Bootstrap: ?token= unlocks and sets setup cookie (never Lounge cookie).
 	if (flags.mode === 'bootstrap') {
 		const token = extractSetupToken(event);
 		if (isValidSetupToken(token)) {
 			grantSetupCookie(event);
-			return { ...setupPageFlags(event), justUnlocked: true };
+			return { ...(await setupPageFlags(event)), justUnlocked: true };
 		}
 	}
 

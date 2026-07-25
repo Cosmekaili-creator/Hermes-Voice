@@ -1,4 +1,5 @@
 import type { Handle } from '@sveltejs/kit';
+import { resolveBinding } from '$lib/server/auth';
 import { LOCALE_COOKIE, resolveRequestLocale } from '$lib/i18n/resolve';
 
 function setSecurityHeaders(response: Response): void {
@@ -17,6 +18,11 @@ export const handle: Handle = async ({ event, resolve }) => {
 		event.cookies.get(LOCALE_COOKIE),
 		event.request.headers.get('accept-language')
 	);
+
+	const binding = await resolveBinding(event);
+	event.locals.principal = binding
+		? { id: binding.id, role: binding.role, label: binding.label }
+		: null;
 
 	const response = await resolve(event, {
 		transformPageChunk: ({ html }) => html.replace('%lang%', event.locals.locale)

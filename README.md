@@ -8,7 +8,7 @@ Private **realtime voice** web UI for [Hermes Agent](https://github.com/NousRese
 - Immediate chat / translation in voice (xAI realtime, voice `eve`)
 - Email, calendar, contacts, and other tool work → Hermes Agent API
 - Press-to-talk Lounge UI (mic + playback visualizer)
-- Single-user URL key gate (`?k=`)
+- URL key gate (`?k=`); optional multi-user with per-user Hermes profile bindings
 
 Bring your own xAI key and Hermes instance.
 
@@ -90,7 +90,7 @@ SvelteKit ──POST /api/hermes──► Hermes Agent (:8642)
 ## Current limits
 
 - **xAI only** — a thin provider adapter seam exists (`src/lib/providers/`), but there is still no second vendor or UI picker (see [docs/CONFIGURATION.md](docs/CONFIGURATION.md) capability matrix)
-- Single shared URL key (not multi-user accounts)
+- Default single-user URL key; optional `MULTI_USER=1` with isolated Hermes profiles (N users ≈ N Hermes processes) — see [docs/CONFIGURATION.md](docs/CONFIGURATION.md)
 - Talk modes: **push-to-talk** (default) or **hands-free** (server VAD); not always-on without arming
 
 ## Maintainer

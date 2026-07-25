@@ -10,7 +10,7 @@ function strField(body: unknown, key: string): string | null {
 
 export const POST: RequestHandler = async (event) => {
 	const body = await event.request.json().catch(() => ({}));
-	requireSetupOrOwner(event, body);
+	await requireSetupOrOwner(event, body);
 
 	const result = await probeHermes({
 		hermesApiBase: strField(body, 'hermesApiBase'),

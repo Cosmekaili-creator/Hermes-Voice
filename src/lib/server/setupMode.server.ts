@@ -1,7 +1,13 @@
 import { env } from '$env/dynamic/private';
 import { error, type Cookies, type RequestEvent } from '@sveltejs/kit';
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { isAuthenticated, requireVoiceKey } from '$lib/server/auth';
+import {
+	isAuthenticated,
+	requireOwner,
+	requireVoiceKey,
+	resolveBinding
+} from '$lib/server/auth';
+import { isMultiUserMode } from '$lib/server/bindings.server';
 
 /** Setup-only cookie — never grants Lounge session (`hv` / `__Host-hv`). */
 export const SETUP_COOKIE_HOST = '__Host-hv_setup';
@@ -140,35 +146,44 @@ export function clearSetupCookie(cookies: Cookies): void {
 }
 
 /**
- * Mode A: setup cookie/token. Mode D: VOICE_URL_KEY session.
+ * Mode A: setup cookie/token. Mode D: owner session (any key in single-user).
  * Mode B mutators: 403. Mode C anonymous: 401 via requireVoiceKey.
- * After bootstrap revoke, SETUP_TOKEN path is dead immediately (runtime flags).
+ * Multi-user complete: owner only. After bootstrap revoke, SETUP_TOKEN path is dead.
  */
-export function requireSetupOrOwner(event: RequestEvent, body?: unknown): void {
+export async function requireSetupOrOwner(event: RequestEvent, body?: unknown): Promise<void> {
 	const mode = getSetupMode();
 	if (mode === 'bootstrap') {
 		if (isSetupUnlocked(event, body)) return;
 		error(403, 'Forbidden');
 	}
 	if (mode === 'complete') {
-		requireVoiceKey(event, body);
+		if (isMultiUserMode()) {
+			await requireOwner(event, body);
+		} else {
+			await requireVoiceKey(event, body);
+		}
 		return;
 	}
 	error(403, 'Forbidden');
 }
 
 /** Page load helpers — never expose secrets. */
-export function setupPageFlags(event: RequestEvent): {
+export async function setupPageFlags(event: RequestEvent): Promise<{
 	mode: SetupMode;
 	unlocked: boolean;
 	rotation: boolean;
-} {
+}> {
 	const mode = getSetupMode();
 	if (mode === 'bootstrap') {
 		return { mode, unlocked: isSetupUnlocked(event), rotation: false };
 	}
 	if (mode === 'complete') {
-		const owner = isAuthenticated(event);
+		if (isMultiUserMode()) {
+			const binding = await resolveBinding(event);
+			const owner = binding?.role === 'owner';
+			return { mode, unlocked: Boolean(owner), rotation: Boolean(owner) };
+		}
+		const owner = await isAuthenticated(event);
 		return { mode, unlocked: owner, rotation: owner };
 	}
 	return { mode, unlocked: false, rotation: false };
