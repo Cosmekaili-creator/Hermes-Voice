@@ -33,5 +33,6 @@ vite.config.ts.timestamp-*
 *.log
 debug-*.json
 
-# Local brainstorming (not published)
+# Local brainstorming / process notes (not published)
 docs/FUTURE.md
+docs/PIPELINE.md
