@@ -1,0 +1,29 @@
+{
+	"version": 1,
+	"users": [
+		{
+			"id": "00000000-0000-4000-8000-000000000001",
+			"label": "Owner",
+			"role": "owner",
+			"voiceKey": "replace-with-long-random-owner-voice-key",
+			"hermesApiBase": "http://127.0.0.1:8642",
+			"hermesApiKey": "replace-with-owner-hermes-api-server-key",
+			"hermesSessionKey": "agent:main:voice",
+			"enabled": true,
+			"createdAt": "2026-07-25T00:00:00.000Z",
+			"updatedAt": "2026-07-25T00:00:00.000Z"
+		},
+		{
+			"id": "00000000-0000-4000-8000-000000000002",
+			"label": "Alice",
+			"role": "user",
+			"voiceKey": "replace-with-long-random-alice-voice-key",
+			"hermesApiBase": "http://127.0.0.1:8643",
+			"hermesApiKey": "replace-with-alice-hermes-api-server-key",
+			"hermesSessionKey": "agent:main:voice",
+			"enabled": true,
+			"createdAt": "2026-07-25T00:00:00.000Z",
+			"updatedAt": "2026-07-25T00:00:00.000Z"
+		}
+	]
+}

@@ -1,5 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { redactForLog } from '$lib/server/logRedact';
+import { validateHermesApiBase } from '$lib/server/setupProbes.server';
 
 const HERMES_TIMEOUT_MS = 120_000;
 
@@ -46,10 +47,11 @@ export async function callHermesChat(opts: {
 }): Promise<HermesChatResult> {
 	const apiKey = opts.hermesApiKey.trim();
 	const sessionKey = opts.hermesSessionKey.trim();
-	const base = opts.hermesApiBase.trim().replace(/\/$/, '');
-	if (!apiKey || !sessionKey || !base) {
+	const baseCheck = validateHermesApiBase(opts.hermesApiBase);
+	if (!apiKey || !sessionKey || !baseCheck.ok) {
 		error(500, 'Hermes bridge unavailable');
 	}
+	const base = baseCheck.base;
 
 	const request = opts.request.trim();
 	if (!request) {

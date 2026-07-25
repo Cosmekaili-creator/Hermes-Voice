@@ -1,0 +1,71 @@
+# Example Compose for Hermes Voice (Linux/VPS-oriented).
+# Not a full production stack — put host nginx/Caddy in front; keep systemd as a first-class option.
+#
+# From repo root:
+#   cp deploy/env.example .env   # edit; chmod 600 .env
+#   mkdir -p data
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#
+# network_mode: host → Voice can reach Hermes on 127.0.0.1:8642… (Compose `ports:` are ignored).
+# Docker Desktop (Mac/Windows): host networking differs — see docs/OPS.md.
+
+services:
+  hermes-voice:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: hermes-voice
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - ../.env
+    environment:
+      # Must match the mounted .env path if the wizard writes env at runtime.
+      ENV_FILE: /app/.env
+      BINDINGS_FILE: /app/data/bindings.json
+      HOST: 127.0.0.1
+      PORT: "4331"
+    volumes:
+      # RW so the setup wizard / multi-user enable can persist.
+      - ../.env:/app/.env
+      - ../data:/app/data
+
+  # ---------------------------------------------------------------------------
+  # EXAMPLE ONLY — Hermes Agent sidecars are NOT maintained by Hermes Voice.
+  # Pin your own image tag; operate volumes/keys yourself. See docs/OPS.md.
+  # Uncomment and adjust. Prefer 127.0.0.1 binds — never publish Hermes publicly.
+  # ---------------------------------------------------------------------------
+  #
+  # hermes-owner:
+  #   image: nousresearch/hermes-agent:YOUR_PINNED_TAG
+  #   container_name: hermes-owner
+  #   restart: unless-stopped
+  #   command: gateway run
+  #   environment:
+  #     API_SERVER_ENABLED: "true"
+  #     API_SERVER_HOST: 0.0.0.0
+  #     API_SERVER_PORT: "8642"
+  #     API_SERVER_KEY: replace-me-owner
+  #   ports:
+  #     - "127.0.0.1:8642:8642"
+  #   volumes:
+  #     - hermes-owner-data:/opt/data
+  #
+  # hermes-alice:
+  #   image: nousresearch/hermes-agent:YOUR_PINNED_TAG
+  #   container_name: hermes-alice
+  #   restart: unless-stopped
+  #   command: gateway run
+  #   environment:
+  #     API_SERVER_ENABLED: "true"
+  #     API_SERVER_HOST: 0.0.0.0
+  #     API_SERVER_PORT: "8642"
+  #     API_SERVER_KEY: replace-me-alice
+  #   ports:
+  #     - "127.0.0.1:8643:8642"
+  #   volumes:
+  #     - hermes-alice-data:/opt/data
+  #
+  # volumes:
+  #   hermes-owner-data:
+  #   hermes-alice-data:

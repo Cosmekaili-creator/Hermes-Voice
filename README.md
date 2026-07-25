@@ -84,6 +84,7 @@ Optional OpenAI overrides: `OPENAI_REALTIME_MODEL`, `OPENAI_VOICE` (server-resol
 ## Production
 
 Example systemd unit + nginx vhost: [deploy/](deploy/).  
+Optional Compose image: [deploy/docker-compose.yml](deploy/docker-compose.yml) — multi-user / N-profile ops: [docs/OPS.md](docs/OPS.md).  
 Build with `npm run build`, serve `build/` with `adapter-node`, set `ORIGIN=https://your.domain`.
 
 Health check: `GET /health` → `{"ok":true,"service":"hermes-voice"}`.
@@ -103,7 +104,7 @@ SvelteKit ──POST /api/hermes──► Hermes Agent (:8642)
 ## Current limits
 
 - **Provider picker UI** — xAI (default) or OpenAI via `VOICE_PROVIDER` env only; no Lounge / per-user vendor picker (see [docs/CONFIGURATION.md](docs/CONFIGURATION.md))
-- Default single-user URL key; optional `MULTI_USER=1` with isolated Hermes profiles (N users ≈ N Hermes processes) — see [docs/CONFIGURATION.md](docs/CONFIGURATION.md)
+- Default single-user URL key; optional `MULTI_USER=1` with isolated Hermes profiles (N users ≈ N Hermes processes) — see [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [docs/OPS.md](docs/OPS.md)
 - Talk modes: **push-to-talk** (default) or **hands-free** (server VAD); not always-on without arming
 
 ## Maintainer

@@ -2,6 +2,8 @@
 
 These files are **examples**. Adjust user, paths, domain, Node binary, and TLS to your host.
 
+For **multi-user N-profile ops**, Compose examples, and Hermes networking/SSRF notes, see **[docs/OPS.md](../docs/OPS.md)**. systemd + nginx below remain a first-class install path.
+
 ## Typical layout
 
 | Path | Role |
@@ -10,6 +12,8 @@ These files are **examples**. Adjust user, paths, domain, Node binary, and TLS t
 | Runtime | e.g. `/opt/hermes-voice` (`build/`, prod `node_modules`, `.env` mode `600`) |
 | systemd | `deploy/hermes-voice.service` |
 | nginx | `deploy/nginx-example.conf` |
+| Compose (optional) | `deploy/Dockerfile`, `deploy/docker-compose.yml` — see [docs/OPS.md](../docs/OPS.md) |
+| Bindings sample | `deploy/bindings.example.json` |
 
 ## Build & install
 
@@ -42,7 +46,7 @@ Set `ORIGIN` in `.env` to your public HTTPS origin.
 2. Uncomment `ReadWritePaths=/opt/hermes-voice` so the unit can write `.env` **and** `data/bindings.json`.
 3. Enable via `/owner/users` (writes `MULTI_USER=1` + imports owner) or set `MULTI_USER=1` in `.env` and restart.
 4. Add users under `/owner/users` — each row needs its own Hermes profile base URL + API key.
-5. **Ops cost:** N Voice users ≈ N Hermes profile processes (ports, keys, `HERMES_HOME`). Shared xAI only.
+5. **Ops cost:** N Voice users ≈ N Hermes profile processes (ports, keys, `HERMES_HOME`). Shared voice-provider key only. Full runbook: [docs/OPS.md](../docs/OPS.md).
 
 ## Hermes Agent
 
@@ -50,4 +54,4 @@ Hermes must expose its OpenAI-compatible API on a URL reachable **only by this a
 
 On the Hermes side (typical Docker install), enable the API server and set `API_SERVER_KEY` to the same value as this app’s `HERMES_API_KEY`. Do **not** publish Hermes’s API port on the public internet.
 
-For multi-user, run **one Hermes profile (API port + key) per Voice user** — isolation is the profile, not session keys alone.
+For multi-user, run **one Hermes profile (API port + key) per Voice user** — isolation is the profile, not session keys alone. See [docs/OPS.md](../docs/OPS.md) for provisioning, Compose caveats, and the Hermes host allowlist (Compose service DNS names are rejected).

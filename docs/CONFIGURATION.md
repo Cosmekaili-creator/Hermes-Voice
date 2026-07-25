@@ -37,9 +37,9 @@ With `MULTI_USER=1`:
 | Wizard | Still single-binding bootstrap/rotation; owner rotation syncs the owner row + `.env` |
 | Enable | `/owner/users` → Enable (or set `MULTI_USER=1` and restart). Imports env as owner row #1 when the store is empty. |
 | Disable | Syncs owner → `.env`, clears `MULTI_USER`; single-user env auth works again |
-| Ops cost | **N Voice users ≈ N Hermes profile processes** (ports, API keys, `HERMES_HOME`). Do not hide this cost. See [Hermes Profiles](https://hermes-agent.nousresearch.com/docs/user-guide/profiles). |
+| Ops cost | **N Voice users ≈ N Hermes profile processes** (ports, API keys, `HERMES_HOME`). Do not hide this cost. See [Hermes Profiles](https://hermes-agent.nousresearch.com/docs/user-guide/profiles) and the full runbook **[OPS.md](OPS.md)**. |
 
-systemd `ProtectSystem=strict` needs `ReadWritePaths=` covering both `.env` and `data/` — see `deploy/hermes-voice.service`.
+systemd `ProtectSystem=strict` needs `ReadWritePaths=` covering both `.env` and `data/` — see `deploy/hermes-voice.service`. Compose examples: `deploy/docker-compose.yml` (Voice) + [OPS.md](OPS.md) (networking / SSRF allowlist — Compose service DNS names are not allowed as `HERMES_API_BASE`).
 
 ## First-run setup wizard
 
