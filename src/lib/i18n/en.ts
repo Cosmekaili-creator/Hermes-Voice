@@ -1,9 +1,15 @@
 export const en = {
 	'meta.title': 'Hermes Voice',
 	'meta.language': 'Language',
+	'meta.talkMode': 'Talk mode',
+
+	'mode.ptt': 'Push to talk',
+	'mode.handsfree': 'Hands-free',
 
 	'status.idle': 'Press to talk',
+	'status.idleHandsfree': 'Tap to listen',
 	'status.listening': 'Listening… press again when finished',
+	'status.listeningHandsfree': 'Listening… tap to stop',
 	'status.thinking': 'One moment…',
 	'status.hermesWorking': 'Hermes is working…',
 	'status.hermesStill': 'Still on it…',
@@ -14,7 +20,9 @@ export const en = {
 	'status.cancelled': 'Cancelled',
 
 	'button.pressToTalk': 'Press to talk',
+	'button.armHandsfree': 'Tap to listen',
 	'button.finishSpeaking': 'Finish speaking',
+	'button.disarmHandsfree': 'Stop listening',
 	'button.stopHermes': 'Stop Hermes',
 	'button.hermesThinking': 'Hermes is thinking',
 	'button.cancel': 'Cancel',

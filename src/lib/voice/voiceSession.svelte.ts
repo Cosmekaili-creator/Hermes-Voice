@@ -3,9 +3,15 @@ import { getLocale, t, type MessageKey, type VoiceErrorCode } from '$lib/i18n';
 import { createMicCapture, type CaptureHandle } from './audioCapture';
 import { createPlayback, type PlaybackHandle } from './audioPlayback';
 import { buildHermesVoiceInstructions } from './instructions';
-import { createRealtimeClient, type RealtimeClient, type RealtimeServerEvent } from './realtimeClient';
+import {
+	createRealtimeClient,
+	type RealtimeClient,
+	type RealtimeServerEvent,
+	type TurnDetection
+} from './realtimeClient';
 
 export type VoiceDemoState = 'idle' | 'listening' | 'thinking' | 'speaking';
+export type TalkMode = 'ptt' | 'handsfree';
 
 type StatusOverride =
 	| null
@@ -25,6 +31,8 @@ const CONNECT_ERROR_CODES = {
 	websocketFailed: 'error.websocketFailed',
 	realtimeSessionError: 'error.realtimeSessionError'
 } as const satisfies Record<string, VoiceErrorCode>;
+
+const TALK_MODE_STORAGE_KEY = 'hermes-voice.talkMode';
 
 class VoiceAppError extends Error {
 	readonly code: VoiceErrorCode;
@@ -58,8 +66,31 @@ const WARM_RECHECK_MS = 60_000;
 
 type MintResult = { value: string; expires_at: number };
 
+function isTalkMode(value: unknown): value is TalkMode {
+	return value === 'ptt' || value === 'handsfree';
+}
+
+function readStoredTalkMode(): TalkMode {
+	if (typeof localStorage === 'undefined') return 'ptt';
+	try {
+		const stored = localStorage.getItem(TALK_MODE_STORAGE_KEY);
+		return isTalkMode(stored) ? stored : 'ptt';
+	} catch {
+		return 'ptt';
+	}
+}
+
+function writeStoredTalkMode(mode: TalkMode): void {
+	if (typeof localStorage === 'undefined') return;
+	try {
+		localStorage.setItem(TALK_MODE_STORAGE_KEY, mode);
+	} catch {
+		/* ignore */
+	}
+}
+
 /**
- * Real voice session orchestrator (Phase 4 + Phase 7 cancel/warm/wait/haptics).
+ * Real voice session orchestrator (Phase 4 + Phase 7 cancel/warm/wait/haptics + Phase 2 hands-free).
  */
 export function createVoiceDemo(getKey: () => string = () => '') {
 	let state = $state<VoiceDemoState>('idle');
@@ -68,6 +99,9 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 	let needsReconnect = $state(false);
 	let hermesBridgeActive = $state(false);
 	let cancelArmed = $state(false);
+	let talkMode = $state<TalkMode>(readStoredTalkMode());
+	/** True while hands-free is armed for continuous listen (may outlive UI idle briefly). */
+	let handsfreeArmed = $state(false);
 	/** Elapsed seconds while Hermes works; null when not in a wait. */
 	let waitElapsedSec = $state<number | null>(null);
 	/** Blocks response.done → idle until post-tool audio starts (or fail). */
@@ -82,9 +116,11 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 		if (hermesBridgeActive && state === 'thinking') return t('status.hermesWorking');
 		switch (state) {
 			case 'idle':
-				return t('status.idle');
+				return talkMode === 'handsfree' ? t('status.idleHandsfree') : t('status.idle');
 			case 'listening':
-				return t('status.listening');
+				return talkMode === 'handsfree'
+					? t('status.listeningHandsfree')
+					: t('status.listening');
 			case 'thinking':
 				return t('status.thinking');
 			case 'speaking':
@@ -116,6 +152,10 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 		typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
 			? crypto.randomUUID()
 			: `voice-${Date.now()}`;
+
+	function turnDetectionForMode(mode: TalkMode = talkMode): TurnDetection {
+		return mode === 'handsfree' ? { type: 'server_vad' } : null;
+	}
 
 	function clearThinkTimer() {
 		if (thinkTimer !== null) {
@@ -184,6 +224,10 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 		}
 	}
 
+	/**
+	 * Return UI to idle. Does NOT clear handsfreeArmed — only disarm / hard fail /
+	 * destroy / mode-switch abort / speaking-tap stop clear the arm flag.
+	 */
 	function setIdle(override: StatusOverride = null, reconnect = false) {
 		clearThinkTimer();
 		clearCancelArm();
@@ -202,11 +246,17 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 		state = 'idle';
 		statusOverride = override;
 		needsReconnect = reconnect;
+		if (!handsfreeArmed) {
+			capture?.stop();
+		}
+	}
+
+	function hardDisarmCapture() {
+		handsfreeArmed = false;
 		capture?.stop();
 	}
 
 	function fail(code: VoiceErrorCode, opts?: { reconnect?: boolean }) {
-		capture?.stop();
 		playback?.interrupt();
 		try {
 			client?.clearInputBuffer();
@@ -214,6 +264,7 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 			/* ignore */
 		}
 		if (opts?.reconnect) {
+			hardDisarmCapture();
 			try {
 				client?.close();
 			} catch {
@@ -221,12 +272,18 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 			}
 			client = null;
 			token = null;
+			setIdle({ kind: 'key', key: code }, true);
+			return;
 		}
-		setIdle({ kind: 'key', key: code }, opts?.reconnect === true);
+		if (handsfreeArmed && talkMode === 'handsfree' && client?.ready) {
+			void rearmListening({ kind: 'key', key: code });
+			return;
+		}
+		hardDisarmCapture();
+		setIdle({ kind: 'key', key: code });
 	}
 
 	function failRaw(vendorMessage: string, opts?: { reconnect?: boolean }) {
-		capture?.stop();
 		playback?.interrupt();
 		try {
 			client?.clearInputBuffer();
@@ -234,6 +291,7 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 			/* ignore */
 		}
 		if (opts?.reconnect) {
+			hardDisarmCapture();
 			try {
 				client?.close();
 			} catch {
@@ -241,8 +299,15 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 			}
 			client = null;
 			token = null;
+			setIdle({ kind: 'raw', text: vendorMessage }, true);
+			return;
 		}
-		setIdle({ kind: 'raw', text: vendorMessage }, opts?.reconnect === true);
+		if (handsfreeArmed && talkMode === 'handsfree' && client?.ready) {
+			void rearmListening({ kind: 'raw', text: vendorMessage });
+			return;
+		}
+		hardDisarmCapture();
+		setIdle({ kind: 'raw', text: vendorMessage });
 	}
 
 	function confirmCancelHermes() {
@@ -267,6 +332,11 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 			/* ignore */
 		}
 		playback?.interrupt();
+		// Cancel ≠ disarm: if still armed, rearm continuous listen.
+		if (handsfreeArmed && talkMode === 'handsfree') {
+			void rearmListening({ kind: 'key', key: 'status.cancelled' });
+			return;
+		}
 		setIdle({ kind: 'key', key: 'status.cancelled' });
 	}
 
@@ -306,15 +376,23 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 		return audioCtx;
 	}
 
+	function allowAppend(): boolean {
+		return (
+			!!client?.ready &&
+			!hermesBridgeActive &&
+			(state === 'listening' || (talkMode === 'handsfree' && state === 'speaking'))
+		);
+	}
+
 	async function ensureCapture(ctx: AudioContext): Promise<CaptureHandle> {
 		if (capture) return capture;
 		const handle = await createMicCapture(ctx);
 		capture = handle;
 		micAnalyser = handle.analyser;
 		handle.setOnPcm((b64) => {
-			if (destroyed || state !== 'listening') return;
-			if (!client?.ready) return;
-			client.appendAudio(b64);
+			if (destroyed) return;
+			if (!allowAppend()) return;
+			client?.appendAudio(b64);
 		});
 		return handle;
 	}
@@ -498,6 +576,23 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 		void runHermesBridge(callId, request, myTurn);
 	}
 
+	/** Barge-in: cancel playback only — never clearInputBuffer (would wipe new utterance). */
+	function bargeInFromSpeaking() {
+		turnId += 1;
+		clearThinkTimer();
+		suppressIdleForTool = false;
+		busy = false;
+		try {
+			client?.cancelResponse();
+		} catch {
+			/* ignore */
+		}
+		playback?.interrupt();
+		state = 'listening';
+		statusOverride = null;
+		pulse(12);
+	}
+
 	function handleServerEvent(event: RealtimeServerEvent, myTurn: number) {
 		if (destroyed || myTurn !== turnId) return;
 
@@ -507,6 +602,33 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 					(typeof event.error?.message === 'string' && event.error.message) || '';
 				if (msg) failRaw(msg);
 				else fail('error.voiceError');
+				return;
+			}
+			case 'input_audio_buffer.speech_started': {
+				if (talkMode !== 'handsfree' || !handsfreeArmed || hermesBridgeActive) return;
+				if (state === 'speaking') {
+					bargeInFromSpeaking();
+				}
+				return;
+			}
+			case 'input_audio_buffer.speech_stopped': {
+				if (talkMode !== 'handsfree' || !handsfreeArmed) return;
+				if (state !== 'listening') return;
+				// Server VAD commits + responds — never client commitAndRespond.
+				// Keep capture running while armed; only gate appends during thinking.
+				turnId += 1;
+				const stoppedTurn = turnId;
+				busy = true;
+				state = 'thinking';
+				statusOverride = null;
+				pulse(8);
+				clearThinkTimer();
+				thinkTimer = setTimeout(() => {
+					if (destroyed || stoppedTurn !== turnId) return;
+					if (state === 'thinking' && !hermesBridgeActive) {
+						fail('error.noReply');
+					}
+				}, THINK_TIMEOUT_MS);
 				return;
 			}
 			case 'response.function_call_arguments.delta':
@@ -538,7 +660,11 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 					if (destroyed || myTurn !== turnId) return;
 					if (hermesBridgeActive || suppressIdleForTool) return;
 					if (state === 'speaking' || state === 'thinking') {
-						setIdle();
+						if (handsfreeArmed && talkMode === 'handsfree') {
+							await rearmListening();
+						} else {
+							setIdle();
+						}
 					}
 				})();
 				return;
@@ -564,7 +690,7 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 				onEvent: (ev) => handleServerEvent(ev, turnId),
 				onError: (message) => {
 					if (destroyed) return;
-					if (state !== 'idle') {
+					if (state !== 'idle' || handsfreeArmed) {
 						const mapped = CONNECT_ERROR_CODES[message as keyof typeof CONNECT_ERROR_CODES];
 						if (mapped) fail(mapped);
 						else failRaw(message);
@@ -572,13 +698,17 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 				},
 				onClose: () => {
 					if (destroyed) return;
-					if (state === 'listening' || state === 'thinking' || state === 'speaking') {
+					if (state === 'listening' || state === 'thinking' || state === 'speaking' || handsfreeArmed) {
 						fail('error.connectionLost', { reconnect: true });
 					}
 				}
 			});
 			try {
-				await rt.connect(token.value, buildHermesVoiceInstructions(getLocale()));
+				await rt.connect(
+					token.value,
+					buildHermesVoiceInstructions(getLocale()),
+					turnDetectionForMode()
+				);
 			} catch (err) {
 				connectFailure(err);
 			}
@@ -643,6 +773,51 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 		return warmInFlight;
 	}
 
+	/**
+	 * Dedicated hands-free rearm path (not startListening from idle).
+	 * Keeps handsfreeArmed; restarts listen UI + capture without client commit.
+	 */
+	async function rearmListening(override: StatusOverride = null) {
+		if (destroyed || !handsfreeArmed || talkMode !== 'handsfree') return;
+		if (hermesBridgeActive) return;
+
+		turnId += 1;
+		const myTurn = turnId;
+		clearThinkTimer();
+		clearCancelArm();
+		clearWaitRotation();
+		suppressIdleForTool = false;
+		busy = false;
+		needsReconnect = false;
+
+		try {
+			const ctx = await ensureAudio();
+			const mic = await ensureCapture(ctx);
+			await ensureRealtime();
+			if (destroyed || myTurn !== turnId || !handsfreeArmed) return;
+			mic.start();
+			state = 'listening';
+			statusOverride = override;
+		} catch (err) {
+			if (destroyed || myTurn !== turnId) return;
+			hardDisarmCapture();
+			const name = err instanceof DOMException ? err.name : '';
+			if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+				setIdle({ kind: 'key', key: 'error.micDenied' });
+				return;
+			}
+			if (err instanceof VoiceAppError) {
+				setIdle({ kind: 'key', key: err.code }, err.reconnect);
+				return;
+			}
+			if (err instanceof VoiceRawError) {
+				setIdle({ kind: 'raw', text: err.message }, err.reconnect);
+				return;
+			}
+			setIdle({ kind: 'key', key: 'error.couldNotStart' });
+		}
+	}
+
 	async function startListening() {
 		if (destroyed || busy || state !== 'idle') return;
 
@@ -672,10 +847,16 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 				return;
 			}
 
+			// Ensure session turn_detection matches current mode (reconnect may have raced).
+			client?.setTurnDetection(turnDetectionForMode());
+
 			playback?.interrupt();
 			mic.start();
 			busy = false;
 			needsReconnect = false;
+			if (talkMode === 'handsfree') {
+				handsfreeArmed = true;
+			}
 			state = 'listening';
 			statusOverride = null;
 			pulse(12);
@@ -684,6 +865,7 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 				busy = false;
 				return;
 			}
+			hardDisarmCapture();
 			const name = err instanceof DOMException ? err.name : '';
 			if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
 				fail('error.micDenied');
@@ -707,6 +889,8 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 
 	function finishListening() {
 		if (state !== 'listening' || !client?.ready) return;
+		// Hands-free: server VAD ends the utterance — never client commitAndRespond.
+		if (talkMode === 'handsfree') return;
 
 		turnId += 1;
 		const myTurn = turnId;
@@ -732,8 +916,8 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 		}, THINK_TIMEOUT_MS);
 	}
 
-	function interruptSpeaking() {
-		if (state !== 'speaking') return;
+	function disarmHandsfree() {
+		handsfreeArmed = false;
 		turnId += 1;
 		clearThinkTimer();
 		endHermesBridgeUi();
@@ -746,6 +930,29 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 			/* ignore */
 		}
 		playback?.interrupt();
+		capture?.stop();
+		setIdle();
+	}
+
+	/** Speaking tap: stop + disarm (may clear buffer). Distinct from barge-in. */
+	function interruptSpeaking() {
+		if (state !== 'speaking') return;
+		turnId += 1;
+		clearThinkTimer();
+		endHermesBridgeUi();
+		suppressIdleForTool = false;
+		if (talkMode === 'handsfree') {
+			handsfreeArmed = false;
+		}
+		pulse([10, 40, 10]);
+		try {
+			client?.cancelResponse();
+			client?.clearInputBuffer();
+		} catch {
+			/* ignore */
+		}
+		playback?.interrupt();
+		capture?.stop();
 		setIdle();
 	}
 
@@ -756,6 +963,19 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 			return;
 		}
 		if (busy || state === 'thinking') return;
+
+		if (talkMode === 'handsfree') {
+			if (state === 'speaking') {
+				interruptSpeaking();
+				return;
+			}
+			if (state === 'listening' && handsfreeArmed) {
+				disarmHandsfree();
+				return;
+			}
+			void startListening();
+			return;
+		}
 
 		if (state === 'speaking') {
 			interruptSpeaking();
@@ -768,6 +988,41 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 		void startListening();
 	}
 
+	function setTalkMode(mode: TalkMode) {
+		if (!isTalkMode(mode) || mode === talkMode) return;
+
+		turnId += 1;
+		clearThinkTimer();
+		endHermesBridgeUi();
+		suppressIdleForTool = false;
+		handsfreeArmed = false;
+		busy = false;
+		try {
+			hermesAbort?.abort();
+		} catch {
+			/* ignore */
+		}
+		hermesAbort = null;
+		try {
+			client?.cancelResponse();
+			client?.clearInputBuffer();
+		} catch {
+			/* ignore */
+		}
+		playback?.interrupt();
+		capture?.stop();
+		state = 'idle';
+		statusOverride = null;
+		needsReconnect = false;
+
+		talkMode = mode;
+		writeStoredTalkMode(mode);
+
+		if (client?.open) {
+			client.setTurnDetection(turnDetectionForMode(mode));
+		}
+	}
+
 	function refreshInstructions() {
 		if (!client?.open) return;
 		client.updateInstructions(buildHermesVoiceInstructions(getLocale()));
@@ -776,6 +1031,7 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 	function destroy() {
 		destroyed = true;
 		busy = false;
+		handsfreeArmed = false;
 		clearThinkTimer();
 		clearCancelArm();
 		clearWaitRotation();
@@ -829,6 +1085,12 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 		get cancelArmed() {
 			return cancelArmed;
 		},
+		get talkMode() {
+			return talkMode;
+		},
+		get handsfreeArmed() {
+			return handsfreeArmed;
+		},
 		get waitElapsedSec() {
 			return waitElapsedSec;
 		},
@@ -840,6 +1102,7 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 		},
 		warm,
 		toggle,
+		setTalkMode,
 		refreshInstructions,
 		destroy
 	};

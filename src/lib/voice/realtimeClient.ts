@@ -3,6 +3,16 @@ import { VOICE_TOOLS } from './tools';
 const REALTIME_URL = 'wss://api.x.ai/v1/realtime?model=grok-voice-latest';
 const XAI_PCM_RATE = 24000;
 
+/**
+ * xAI turn_detection values used by Hermes Voice:
+ * - `null` — push-to-talk / manual commit
+ * - `{ type: 'server_vad' }` — hands-free (server ends the utterance)
+ *
+ * Phase 3 multi-provider matrix will document per-vendor VAD capability;
+ * keep this stub minimal (no idle_timeout / threshold knobs here).
+ */
+export type TurnDetection = null | { type: 'server_vad' };
+
 export type RealtimeServerEvent = {
 	type: string;
 	delta?: string;
@@ -23,8 +33,9 @@ export type RealtimeClientHandlers = {
 export type RealtimeClient = {
 	readonly ready: boolean;
 	readonly open: boolean;
-	connect(token: string, instructions: string): Promise<void>;
+	connect(token: string, instructions: string, turnDetection?: TurnDetection): Promise<void>;
 	updateInstructions(instructions: string): void;
+	setTurnDetection(turnDetection: TurnDetection): void;
 	send(obj: Record<string, unknown>): void;
 	appendAudio(base64Pcm16: string): void;
 	commitAndRespond(): void;
@@ -35,32 +46,37 @@ export type RealtimeClient = {
 	close(): void;
 };
 
-function sessionUpdatePayload(instructions: string) {
-	return {
-		type: 'session.update',
-		session: {
-			model: 'grok-voice-latest',
-			voice: 'eve',
-			instructions,
-			turn_detection: null,
-			tools: [...VOICE_TOOLS],
-			audio: {
-				input: { format: { type: 'audio/pcm', rate: XAI_PCM_RATE } },
-				output: { format: { type: 'audio/pcm', rate: XAI_PCM_RATE } }
-			}
-		}
-	};
-}
-
 /**
  * Browser WebSocket client for xAI realtime.
  * Auth via subprotocol `xai-client-secret.<ephemeral>` (browsers cannot set Authorization).
  * Waits for `session.updated` before resolving connect (append only after ready).
+ *
+ * Caches last instructions + turn_detection so locale refresh / partial updates
+ * never reset VAD back to null.
  */
 export function createRealtimeClient(handlers: RealtimeClientHandlers = {}): RealtimeClient {
 	let ws: WebSocket | null = null;
 	let ready = false;
 	let connectGeneration = 0;
+	let cachedInstructions = '';
+	let cachedTurnDetection: TurnDetection = null;
+
+	function sessionUpdatePayload() {
+		return {
+			type: 'session.update',
+			session: {
+				model: 'grok-voice-latest',
+				voice: 'eve',
+				instructions: cachedInstructions,
+				turn_detection: cachedTurnDetection,
+				tools: [...VOICE_TOOLS],
+				audio: {
+					input: { format: { type: 'audio/pcm', rate: XAI_PCM_RATE } },
+					output: { format: { type: 'audio/pcm', rate: XAI_PCM_RATE } }
+				}
+			}
+		};
+	}
 
 	function send(obj: Record<string, unknown>) {
 		if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -87,14 +103,27 @@ export function createRealtimeClient(handlers: RealtimeClientHandlers = {}): Rea
 	}
 
 	function updateInstructions(instructions: string) {
+		cachedInstructions = instructions;
 		if (!ws || ws.readyState !== WebSocket.OPEN) return;
-		send(sessionUpdatePayload(instructions));
+		send(sessionUpdatePayload());
 	}
 
-	async function connect(token: string, instructions: string): Promise<void> {
+	function setTurnDetection(turnDetection: TurnDetection) {
+		cachedTurnDetection = turnDetection;
+		if (!ws || ws.readyState !== WebSocket.OPEN) return;
+		send(sessionUpdatePayload());
+	}
+
+	async function connect(
+		token: string,
+		instructions: string,
+		turnDetection: TurnDetection = null
+	): Promise<void> {
 		close();
 		const gen = ++connectGeneration;
 		ready = false;
+		cachedInstructions = instructions;
+		cachedTurnDetection = turnDetection;
 
 		await new Promise<void>((resolve, reject) => {
 			let settled = false;
@@ -122,7 +151,7 @@ export function createRealtimeClient(handlers: RealtimeClientHandlers = {}): Rea
 			sock.onopen = () => {
 				if (gen !== connectGeneration) return;
 				handlers.onOpen?.();
-				send(sessionUpdatePayload(instructions));
+				send(sessionUpdatePayload());
 			};
 
 			sock.onmessage = (ev) => {
@@ -183,6 +212,7 @@ export function createRealtimeClient(handlers: RealtimeClientHandlers = {}): Rea
 		},
 		connect,
 		updateInstructions,
+		setTurnDetection,
 		send,
 		appendAudio(base64Pcm16: string) {
 			if (!ready) return;

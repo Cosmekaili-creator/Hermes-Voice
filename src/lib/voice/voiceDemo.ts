@@ -5,5 +5,6 @@
 export {
 	createVoiceDemo,
 	type VoiceDemo,
-	type VoiceDemoState
+	type VoiceDemoState,
+	type TalkMode
 } from './voiceSession.svelte.js';

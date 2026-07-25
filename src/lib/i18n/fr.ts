@@ -3,9 +3,15 @@ import type { Messages } from './types';
 export const fr = {
 	'meta.title': 'Hermes Voice',
 	'meta.language': 'Langue',
+	'meta.talkMode': 'Mode de parole',
+
+	'mode.ptt': 'Appuyer pour parler',
+	'mode.handsfree': 'Mains libres',
 
 	'status.idle': 'Appuyez pour parler',
+	'status.idleHandsfree': 'Appuyez pour écouter',
 	'status.listening': 'Écoute… appuyez à nouveau quand vous avez fini',
+	'status.listeningHandsfree': 'Écoute… appuyez pour arrêter',
 	'status.thinking': 'Un instant…',
 	'status.hermesWorking': 'Hermes travaille…',
 	'status.hermesStill': 'Toujours en cours…',
@@ -16,7 +22,9 @@ export const fr = {
 	'status.cancelled': 'Annulé',
 
 	'button.pressToTalk': 'Appuyez pour parler',
+	'button.armHandsfree': 'Appuyez pour écouter',
 	'button.finishSpeaking': 'Terminer',
+	'button.disarmHandsfree': 'Arrêter l’écoute',
 	'button.stopHermes': 'Arrêter Hermes',
 	'button.hermesThinking': 'Hermes réfléchit',
 	'button.cancel': 'Annuler',

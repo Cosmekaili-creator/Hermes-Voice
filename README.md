@@ -87,7 +87,7 @@ SvelteKit ──POST /api/hermes──► Hermes Agent (:8642)
 
 - **xAI only** (no OpenAI Realtime / other providers yet)
 - Single shared URL key (not multi-user accounts)
-- Manual press-to-talk (not continuous server VAD)
+- Talk modes: **push-to-talk** (default) or **hands-free** (server VAD); not always-on without arming
 
 ## Maintainer
 

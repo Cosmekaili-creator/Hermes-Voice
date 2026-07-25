@@ -5,6 +5,7 @@
 	import { drawLazicLounge, type VizQuality } from '$lib/viz/lazicLounge';
 	import { createScreenWakeLock } from '$lib/wakeLock';
 	import LocaleSwitch from './LocaleSwitch.svelte';
+	import TalkModeSwitch from './TalkModeSwitch.svelte';
 
 	// Capture ?k= once at boot (before parent replaceState hides it) for API fallback.
 	// Cookie remains primary; this keeps PWA sessions working when the WebView drops cookies.
@@ -38,13 +39,14 @@
 		if (demo.isHermesWorking) {
 			return demo.cancelArmed ? t('button.cancelArm') : t('button.cancel');
 		}
+		const handsfree = demo.talkMode === 'handsfree';
 		switch (demo.state) {
 			case 'idle':
 				if (demo.busy) return t('button.connecting');
 				if (demo.needsReconnect) return t('button.reconnect');
-				return t('button.pressToTalk');
+				return handsfree ? t('button.armHandsfree') : t('button.pressToTalk');
 			case 'listening':
-				return t('button.finishSpeaking');
+				return handsfree ? t('button.disarmHandsfree') : t('button.finishSpeaking');
 			case 'thinking':
 				return t('button.hermesThinking');
 			case 'speaking':
@@ -184,6 +186,7 @@
 	<canvas class="viz" bind:this={canvasEl} aria-hidden="true"></canvas>
 
 	<div class="locale-corner">
+		<TalkModeSwitch mode={demo.talkMode} onChange={(m) => demo.setTalkMode(m)} />
 		<LocaleSwitch />
 	</div>
 
@@ -304,6 +307,11 @@
 		z-index: 4;
 		top: max(0.85rem, env(safe-area-inset-top));
 		right: max(0.85rem, env(safe-area-inset-right));
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		gap: 0.4rem;
+		max-width: calc(100vw - 1.7rem);
 	}
 
 	.center {
