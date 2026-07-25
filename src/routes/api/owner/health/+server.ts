@@ -7,6 +7,7 @@ import {
 	readEnvTrimmed,
 	redactBinding
 } from '$lib/server/bindings.server';
+import { enforceRateLimit, RATE } from '$lib/server/rateLimit.server';
 import { probeHermes, probeOpenAI, probeXai } from '$lib/server/setupProbes.server';
 import { isSetupComplete } from '$lib/server/setupMode.server';
 
@@ -15,6 +16,8 @@ function probeField(result: { ok: true } | { ok: false; code: string }) {
 }
 
 export const GET: RequestHandler = async (event) => {
+	enforceRateLimit(event, 'ownerHealth', RATE.ownerHealth.limit, RATE.ownerHealth.windowMs);
+
 	if (isMultiUserMode()) {
 		await requireOwner(event);
 	} else {

@@ -1,7 +1,8 @@
 import { env } from '$env/dynamic/private';
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
+import { safeEqualStr } from '$lib/server/cryptoEqual.server';
 import {
 	applyEnvUpdatesInProcess,
 	writeEnvFileAtomic,
@@ -68,17 +69,6 @@ export function resolveBindingsPath(): string {
 	const fromEnv = readEnvTrimmed('BINDINGS_FILE');
 	if (fromEnv) return path.resolve(fromEnv);
 	return path.join(process.cwd(), 'data', 'bindings.json');
-}
-
-function safeEqualStr(a: string, b: string): boolean {
-	const ba = Buffer.from(a, 'utf8');
-	const bb = Buffer.from(b, 'utf8');
-	if (ba.length !== bb.length) return false;
-	try {
-		return timingSafeEqual(ba, bb);
-	} catch {
-		return false;
-	}
 }
 
 function hintLast4(value: string): string {

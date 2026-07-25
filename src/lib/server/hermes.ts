@@ -1,8 +1,10 @@
 import { error } from '@sveltejs/kit';
 import { redactForLog } from '$lib/server/logRedact';
-import { validateHermesApiBase } from '$lib/server/setupProbes.server';
+import { resolveHermesFetchTarget } from '$lib/server/setupProbes.server';
 
 const HERMES_TIMEOUT_MS = 120_000;
+/** Cap authenticated Hermes prompt size (chars) — DoS / cost control. */
+export const MAX_HERMES_REQUEST_CHARS = 16_000;
 
 export type HermesChatResult = { text: string };
 
@@ -47,15 +49,20 @@ export async function callHermesChat(opts: {
 }): Promise<HermesChatResult> {
 	const apiKey = opts.hermesApiKey.trim();
 	const sessionKey = opts.hermesSessionKey.trim();
-	const baseCheck = validateHermesApiBase(opts.hermesApiBase);
-	if (!apiKey || !sessionKey || !baseCheck.ok) {
+	if (!apiKey || !sessionKey) {
 		error(500, 'Hermes bridge unavailable');
 	}
-	const base = baseCheck.base;
+	const target = await resolveHermesFetchTarget(opts.hermesApiBase);
+	if (!target.ok) {
+		error(500, 'Hermes bridge unavailable');
+	}
 
 	const request = opts.request.trim();
 	if (!request) {
 		error(400, 'Missing request');
+	}
+	if (request.length > MAX_HERMES_REQUEST_CHARS) {
+		error(400, 'Request too large');
 	}
 
 	const headers: Record<string, string> = {
@@ -63,12 +70,15 @@ export async function callHermesChat(opts: {
 		'X-Hermes-Session-Key': sessionKey,
 		'Content-Type': 'application/json'
 	};
+	if (target.hostHeader) {
+		headers.Host = target.hostHeader;
+	}
 	const sessionId = opts.sessionId?.trim();
 	if (sessionId) {
 		headers['X-Hermes-Session-Id'] = sessionId.slice(0, 256);
 	}
 
-	const url = `${base}/v1/chat/completions`;
+	const url = `${target.fetchBase}/v1/chat/completions`;
 	const timeout = AbortSignal.timeout(HERMES_TIMEOUT_MS);
 	const signal =
 		opts.signal && typeof AbortSignal.any === 'function'

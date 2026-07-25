@@ -7,13 +7,8 @@
 	import LocaleSwitch from './LocaleSwitch.svelte';
 	import TalkModeSwitch from './TalkModeSwitch.svelte';
 
-	// Capture ?k= once at boot (before parent replaceState hides it) for API fallback.
-	// Cookie remains primary; this keeps PWA sessions working when the WebView drops cookies.
-	const bootKey =
-		typeof location !== 'undefined'
-			? (new URLSearchParams(location.search).get('k') ?? '')
-			: '';
-	const demo = createVoiceDemo(() => bootKey);
+	// Auth is cookie-only: SSR grants HttpOnly session from valid ?k=; SPA never retains the key.
+	const demo = createVoiceDemo();
 	const wakeLock = createScreenWakeLock();
 	/** Must match AnalyserNode.frequencyBinCount for fftSize 512 (not fftSize itself). */
 	const freqBuf = new Uint8Array(256);

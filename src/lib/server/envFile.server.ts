@@ -11,7 +11,9 @@ export function resolveEnvFilePath(): string {
 
 export const MANAGED_ENV_KEYS = [
 	'VOICE_URL_KEY',
+	'VOICE_PROVIDER',
 	'XAI_API_KEY',
+	'OPENAI_API_KEY',
 	'HERMES_API_BASE',
 	'HERMES_API_KEY',
 	'HERMES_SESSION_KEY',

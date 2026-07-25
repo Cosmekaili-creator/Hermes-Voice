@@ -10,6 +10,8 @@ import {
 	writeBindingsAtomic,
 	type Binding
 } from '$lib/server/bindings.server';
+import { assertSameOrigin } from '$lib/server/origin.server';
+import { enforceRateLimit, RATE } from '$lib/server/rateLimit.server';
 import { validateHermesApiBase } from '$lib/server/setupProbes.server';
 
 function strField(body: unknown, key: string): string | null {
@@ -37,6 +39,8 @@ async function loadUsers() {
 }
 
 export const PATCH: RequestHandler = async (event) => {
+	assertSameOrigin(event);
+	enforceRateLimit(event, 'ownerMutate', RATE.ownerMutate.limit, RATE.ownerMutate.windowMs);
 	await requireOwner(event);
 	const loaded = await loadUsers();
 	if ('error' in loaded && loaded.error) return loaded.error;
@@ -124,6 +128,8 @@ export const PATCH: RequestHandler = async (event) => {
 };
 
 export const DELETE: RequestHandler = async (event) => {
+	assertSameOrigin(event);
+	enforceRateLimit(event, 'ownerMutate', RATE.ownerMutate.limit, RATE.ownerMutate.windowMs);
 	await requireOwner(event);
 	const loaded = await loadUsers();
 	if ('error' in loaded && loaded.error) return loaded.error;

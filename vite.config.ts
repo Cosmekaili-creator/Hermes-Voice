@@ -19,6 +19,7 @@ export default defineConfig({
 				directives: {
 					'default-src': ['self'],
 					'script-src': ['self'],
+					// unsafe-inline: SvelteKit injects critical CSS; avoid hashing churn for now (C-L3).
 					'style-src': ['self', 'unsafe-inline'],
 					'img-src': ['self', 'data:'],
 					'media-src': ['self', 'blob:'],

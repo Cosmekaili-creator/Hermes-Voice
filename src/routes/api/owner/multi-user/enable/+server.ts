@@ -9,9 +9,14 @@ import {
 	applyEnvUpdatesInProcess,
 	writeEnvFileAtomic
 } from '$lib/server/envFile.server';
+import { assertSameOrigin } from '$lib/server/origin.server';
+import { enforceRateLimit, RATE } from '$lib/server/rateLimit.server';
 import { isSetupComplete } from '$lib/server/setupMode.server';
 
 export const POST: RequestHandler = async (event) => {
+	assertSameOrigin(event);
+	enforceRateLimit(event, 'ownerMutate', RATE.ownerMutate.limit, RATE.ownerMutate.windowMs);
+
 	if (!isSetupComplete()) {
 		return json({ ok: false, code: 'setup_incomplete' }, { status: 400 });
 	}

@@ -1,10 +1,14 @@
 import { error, json, type RequestHandler } from '@sveltejs/kit';
 import { requireVoiceKey } from '$lib/server/auth';
-import { callHermesChat } from '$lib/server/hermes';
+import { callHermesChat, MAX_HERMES_REQUEST_CHARS } from '$lib/server/hermes';
+import { assertSameOrigin } from '$lib/server/origin.server';
+import { enforceRateLimit, RATE } from '$lib/server/rateLimit.server';
 
 export const POST: RequestHandler = async (event) => {
+	assertSameOrigin(event);
 	const body = await event.request.json().catch(() => ({}));
 	const binding = await requireVoiceKey(event, body);
+	enforceRateLimit(event, 'hermes', RATE.hermes.limit, RATE.hermes.windowMs, binding.id);
 
 	const request =
 		body && typeof body === 'object' && 'request' in body
@@ -12,6 +16,9 @@ export const POST: RequestHandler = async (event) => {
 			: '';
 	if (!request) {
 		error(400, 'Missing request');
+	}
+	if (request.length > MAX_HERMES_REQUEST_CHARS) {
+		error(400, 'Request too large');
 	}
 
 	const sessionId =

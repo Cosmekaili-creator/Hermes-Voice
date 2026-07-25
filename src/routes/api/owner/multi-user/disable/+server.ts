@@ -10,9 +10,13 @@ import {
 	applyEnvUpdatesInProcess,
 	writeEnvFileAtomic
 } from '$lib/server/envFile.server';
+import { assertSameOrigin } from '$lib/server/origin.server';
+import { enforceRateLimit, RATE } from '$lib/server/rateLimit.server';
 
 /** Sync owner → .env then clear MULTI_USER so single-user env auth works. */
 export const POST: RequestHandler = async (event) => {
+	assertSameOrigin(event);
+	enforceRateLimit(event, 'ownerMutate', RATE.ownerMutate.limit, RATE.ownerMutate.windowMs);
 	await requireOwner(event);
 	if (!isMultiUserMode()) {
 		return json({ ok: true, multiUser: false });

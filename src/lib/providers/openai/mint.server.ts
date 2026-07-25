@@ -34,7 +34,8 @@ async function mintInternal(
 			body: JSON.stringify({
 				expires_after: { seconds: DEFAULT_TTL_SECONDS, anchor: 'created_at' },
 				session: { type: 'realtime', model }
-			})
+			}),
+			signal: AbortSignal.timeout(5_000)
 		});
 	} catch {
 		return { ok: false, code: 'mint_failed' };

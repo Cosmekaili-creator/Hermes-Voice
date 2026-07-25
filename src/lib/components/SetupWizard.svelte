@@ -13,12 +13,15 @@
 
 	const locale = $derived((browser ? getLocale() : page.data.locale) as Locale);
 
-	const steps = ['voice', 'xai', 'hermes', 'origin', 'save'] as const;
+	const steps = ['voice', 'provider', 'hermes', 'origin', 'save'] as const;
 	type Step = (typeof steps)[number];
+	type VoiceProvider = 'xai' | 'openai';
 
 	let stepIndex = $state(0);
 	let voiceUrlKey = $state('');
+	let voiceProvider = $state<VoiceProvider>('xai');
 	let xaiApiKey = $state('');
+	let openaiApiKey = $state('');
 	let hermesApiBase = $state('http://127.0.0.1:8642');
 	let hermesApiKey = $state('');
 	let hermesSessionKey = $state('agent:main:voice');
@@ -60,14 +63,19 @@
 		return { res, data };
 	}
 
-	async function testXai() {
+	async function testProvider() {
 		busy = true;
 		testStatus = 'idle';
 		testCode = '';
 		try {
-			const { data } = await postJson('/api/setup/test/xai', {
-				xaiApiKey: xaiApiKey || undefined
-			});
+			const { data } =
+				voiceProvider === 'openai'
+					? await postJson('/api/setup/test/openai', {
+							openaiApiKey: openaiApiKey || undefined
+						})
+					: await postJson('/api/setup/test/xai', {
+							xaiApiKey: xaiApiKey || undefined
+						});
 			if (data.ok === true) {
 				testStatus = 'ok';
 			} else {
@@ -128,7 +136,12 @@
 
 	function canAdvance(): boolean {
 		if (step === 'voice') return rotation || voiceUrlKey.trim().length > 0;
-		if (step === 'xai') return rotation || xaiApiKey.trim().length > 0;
+		if (step === 'provider') {
+			if (rotation) return true;
+			return voiceProvider === 'openai'
+				? openaiApiKey.trim().length > 0
+				: xaiApiKey.trim().length > 0;
+		}
 		if (step === 'hermes') return rotation || hermesApiKey.trim().length > 0;
 		return true;
 	}
@@ -159,7 +172,9 @@
 		try {
 			const { data } = await postJson('/api/setup/save', {
 				voiceUrlKey: voiceUrlKey || undefined,
+				voiceProvider,
 				xaiApiKey: xaiApiKey || undefined,
+				openaiApiKey: openaiApiKey || undefined,
 				hermesApiBase: hermesApiBase || undefined,
 				hermesApiKey: hermesApiKey || undefined,
 				hermesSessionKey: hermesSessionKey || undefined,
@@ -180,8 +195,8 @@
 	const stepTitle = $derived(
 		step === 'voice'
 			? t('wizard.stepVoice', locale)
-			: step === 'xai'
-				? t('wizard.stepXai', locale)
+			: step === 'provider'
+				? t('wizard.stepProvider', locale)
 				: step === 'hermes'
 					? t('wizard.stepHermes', locale)
 					: step === 'origin'
@@ -225,13 +240,35 @@
 				<button type="button" class="btn ghost" onclick={generateKey}
 					>{t('wizard.generateKey', locale)}</button
 				>
-			{:else if step === 'xai'}
+			{:else if step === 'provider'}
 				<label class="field">
-					<span>{t('wizard.xaiKeyLabel', locale)}</span>
-					<input type="password" autocomplete="off" bind:value={xaiApiKey} />
+					<span>{t('wizard.providerLabel', locale)}</span>
+					<select
+						bind:value={voiceProvider}
+						onchange={() => {
+							testStatus = 'idle';
+							testCode = '';
+						}}
+					>
+						<option value="xai">{t('wizard.providerXai', locale)}</option>
+						<option value="openai">{t('wizard.providerOpenai', locale)}</option>
+					</select>
 				</label>
-				<p class="hint">{t('wizard.xaiKeyHint', locale)}</p>
-				<button type="button" class="btn ghost" disabled={busy} onclick={testXai}>
+				<p class="hint">{t('wizard.providerHint', locale)}</p>
+				{#if voiceProvider === 'openai'}
+					<label class="field">
+						<span>{t('wizard.openaiKeyLabel', locale)}</span>
+						<input type="password" autocomplete="off" bind:value={openaiApiKey} />
+					</label>
+					<p class="hint">{t('wizard.openaiKeyHint', locale)}</p>
+				{:else}
+					<label class="field">
+						<span>{t('wizard.xaiKeyLabel', locale)}</span>
+						<input type="password" autocomplete="off" bind:value={xaiApiKey} />
+					</label>
+					<p class="hint">{t('wizard.xaiKeyHint', locale)}</p>
+				{/if}
+				<button type="button" class="btn ghost" disabled={busy} onclick={testProvider}>
 					{busy ? t('wizard.testing', locale) : t('wizard.test', locale)}
 				</button>
 			{:else if step === 'hermes'}
@@ -409,7 +446,8 @@
 		color: var(--muted);
 	}
 
-	.field input {
+	.field input,
+	.field select {
 		width: 100%;
 		box-sizing: border-box;
 		padding: 0.65rem 0.75rem;
@@ -422,7 +460,8 @@
 		letter-spacing: normal;
 	}
 
-	.field input:focus-visible {
+	.field input:focus-visible,
+	.field select:focus-visible {
 		outline: 2px solid var(--accent);
 		outline-offset: 1px;
 	}

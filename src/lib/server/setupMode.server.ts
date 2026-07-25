@@ -1,6 +1,6 @@
 import { env } from '$env/dynamic/private';
 import { error, type Cookies, type RequestEvent } from '@sveltejs/kit';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 import {
 	isAuthenticated,
 	requireOwner,
@@ -8,6 +8,7 @@ import {
 	resolveBinding
 } from '$lib/server/auth';
 import { isMultiUserMode } from '$lib/server/bindings.server';
+import { safeEqualStr } from '$lib/server/cryptoEqual.server';
 
 /** Setup-only cookie — never grants Lounge session (`hv` / `__Host-hv`). */
 export const SETUP_COOKIE_HOST = '__Host-hv_setup';
@@ -27,17 +28,6 @@ function nonEmptyString(value: unknown): string | null {
 	if (typeof value !== 'string') return null;
 	const trimmed = value.trim();
 	return trimmed.length > 0 ? trimmed : null;
-}
-
-function safeEqualStr(a: string, b: string): boolean {
-	const ba = Buffer.from(a, 'utf8');
-	const bb = Buffer.from(b, 'utf8');
-	if (ba.length !== bb.length) return false;
-	try {
-		return timingSafeEqual(ba, bb);
-	} catch {
-		return false;
-	}
 }
 
 function cookieName(secure: boolean): string {

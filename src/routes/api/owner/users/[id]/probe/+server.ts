@@ -4,9 +4,13 @@ import {
 	ensureBindingsImported,
 	isMultiUserMode
 } from '$lib/server/bindings.server';
+import { assertSameOrigin } from '$lib/server/origin.server';
+import { enforceRateLimit, RATE } from '$lib/server/rateLimit.server';
 import { probeHermes, validateHermesApiBase } from '$lib/server/setupProbes.server';
 
 export const POST: RequestHandler = async (event) => {
+	assertSameOrigin(event);
+	enforceRateLimit(event, 'setupProbe', RATE.setupProbe.limit, RATE.setupProbe.windowMs);
 	await requireOwner(event);
 	if (!isMultiUserMode()) {
 		return json({ ok: false, code: 'multi_user_disabled' }, { status: 400 });

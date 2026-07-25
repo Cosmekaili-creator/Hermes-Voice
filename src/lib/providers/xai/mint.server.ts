@@ -30,7 +30,8 @@ async function mintInternal(apiKeyOverride?: string): Promise<MintProbeResult> {
 			},
 			body: JSON.stringify({
 				expires_after: { seconds: DEFAULT_TTL_SECONDS }
-			})
+			}),
+			signal: AbortSignal.timeout(5_000)
 		});
 	} catch {
 		return { ok: false, code: 'mint_failed' };
