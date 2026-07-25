@@ -4,17 +4,20 @@ import { redactForLog } from '$lib/server/logRedact';
 import type { EphemeralClientSecret } from '../types';
 import { CLIENT_SECRETS_URL, DEFAULT_TTL_SECONDS } from './constants';
 
+export type MintProbeCode = 'missing_key' | 'mint_failed' | 'mint_upstream';
+
+export type MintProbeResult =
+	| { ok: true; value: string; expires_at: number }
+	| { ok: false; code: MintProbeCode };
+
 /**
- * Mint an xAI realtime ephemeral client secret.
- * Does not bind session voice/model/tools (session.update on the client).
+ * Core mint — non-throwing. Optional apiKey override is for setup tests only.
  * Never logs XAI_API_KEY or the ephemeral value.
- *
- * Server-only (`.server.ts`) — do not import from client/shared barrels.
  */
-export async function mintRealtimeClientSecret(): Promise<EphemeralClientSecret> {
-	const apiKey = env.XAI_API_KEY;
+async function mintInternal(apiKeyOverride?: string): Promise<MintProbeResult> {
+	const apiKey = apiKeyOverride?.trim() || env.XAI_API_KEY?.trim();
 	if (!apiKey) {
-		error(500, 'Session mint unavailable');
+		return { ok: false, code: 'missing_key' };
 	}
 
 	let upstream: Response;
@@ -30,14 +33,14 @@ export async function mintRealtimeClientSecret(): Promise<EphemeralClientSecret>
 			})
 		});
 	} catch {
-		error(502, 'Session mint failed');
+		return { ok: false, code: 'mint_failed' };
 	}
 
 	const rawText = await upstream.text().catch(() => '');
 
 	if (!upstream.ok) {
 		console.error(`xAI client_secrets HTTP ${upstream.status}: ${redactForLog(rawText)}`);
-		error(502, 'Session mint failed');
+		return { ok: false, code: 'mint_upstream' };
 	}
 
 	let parsed: unknown;
@@ -45,7 +48,7 @@ export async function mintRealtimeClientSecret(): Promise<EphemeralClientSecret>
 		parsed = JSON.parse(rawText);
 	} catch {
 		console.error('xAI client_secrets: non-JSON body');
-		error(502, 'Session mint failed');
+		return { ok: false, code: 'mint_failed' };
 	}
 
 	const value =
@@ -59,8 +62,38 @@ export async function mintRealtimeClientSecret(): Promise<EphemeralClientSecret>
 
 	if (typeof value !== 'string' || value.length === 0 || typeof expiresAt !== 'number') {
 		console.error('xAI client_secrets: invalid response shape');
-		error(502, 'Session mint failed');
+		return { ok: false, code: 'mint_failed' };
 	}
 
-	return { value, expires_at: expiresAt };
+	return { ok: true, value, expires_at: expiresAt };
+}
+
+/**
+ * Mint an xAI realtime ephemeral client secret.
+ * Does not bind session voice/model/tools (session.update on the client).
+ * Optional `{ apiKey }` is for server-side setup probes only — `/api/session` must not pass it.
+ *
+ * Server-only (`.server.ts`) — do not import from client/shared barrels.
+ */
+export async function mintRealtimeClientSecret(opts?: {
+	apiKey?: string;
+}): Promise<EphemeralClientSecret> {
+	const result = await mintInternal(opts?.apiKey);
+	if (!result.ok) {
+		if (result.code === 'missing_key') {
+			error(500, 'Session mint unavailable');
+		}
+		error(502, 'Session mint failed');
+	}
+	return { value: result.value, expires_at: result.expires_at };
+}
+
+/**
+ * Non-throwing mint probe for setup / owner health.
+ * Discards value/expires_at — callers must never return them to the client.
+ */
+export async function probeMint(apiKey?: string): Promise<{ ok: true } | { ok: false; code: MintProbeCode }> {
+	const result = await mintInternal(apiKey);
+	if (!result.ok) return { ok: false, code: result.code };
+	return { ok: true };
 }

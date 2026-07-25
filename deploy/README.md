@@ -27,6 +27,15 @@ curl -sS https://voice.example.com/health
 
 Set `ORIGIN` in `.env` to your public HTTPS origin.
 
+### First-run setup wizard (optional)
+
+1. Put a random `SETUP_TOKEN` in `/opt/hermes-voice/.env` (leave `SETUP_COMPLETE` unset). Keep the file mode `600`.
+2. Ensure the unit can write that file: uncomment `ReadWritePaths=/opt/hermes-voice` (or the `.env` parent) in `hermes-voice.service` under `ProtectSystem=strict`.
+3. `ENV_FILE` (if set) **must** be the same path as systemd `EnvironmentFile=` — mismatch means the wizard writes a file the unit never reloads.
+4. Start the unit, open `https://your-host/setup?token=<SETUP_TOKEN>`, complete steps, save.
+5. `sudo systemctl restart hermes-voice` (required — disk write does not reload process env).
+6. Open the Lounge with `/?k=<VOICE_URL_KEY>`. Owner probes: `/owner/health` (URL-key session). Public `GET /health` stays liveness-only.
+
 ## Hermes Agent
 
 Hermes must expose its OpenAI-compatible API on a URL reachable **only by this app** (usually loopback), e.g. `http://127.0.0.1:8642`.

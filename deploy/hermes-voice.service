@@ -20,6 +20,9 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+# Required for the WebUI setup wizard to write .env (atomic temp→rename in the parent dir).
+# Prefer the .env parent directory; whole /opt/hermes-voice also works.
+# ReadWritePaths=/opt/hermes-voice
 
 [Install]
 WantedBy=multi-user.target

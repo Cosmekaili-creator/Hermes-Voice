@@ -37,6 +37,10 @@ npm run dev
 
 Open `http://localhost:5173/?k=<your VOICE_URL_KEY>`.
 
+### First-run setup (optional)
+
+Instead of hand-editing every secret, set a random `SETUP_TOKEN` in `.env` (leave `SETUP_COMPLETE` unset), start the app, open `/setup?token=…`, complete the wizard, restart, then use `/?k=…`. Manual `.env` editing remains fully supported. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
 ```bash
 npm run check
 npm run build
