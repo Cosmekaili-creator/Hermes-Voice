@@ -1,9 +1,15 @@
 /**
- * PCM helpers for xAI realtime (24 kHz). Prefer AudioContext({ sampleRate: 24000 });
- * if the browser overrides the rate, linearly resample to/from 24 kHz.
+ * PCM helpers for provider realtime audio (24 kHz). Prefer
+ * AudioContext({ sampleRate: PROVIDER_PCM_RATE }); if the browser overrides the
+ * rate, linearly resample to/from the provider rate.
  */
 
-const TARGET_RATE = 24000;
+import { PCM_RATE } from '$lib/providers/xai/constants';
+
+export const PROVIDER_PCM_RATE = PCM_RATE;
+
+/** One-release alias — prefer PROVIDER_PCM_RATE. */
+export const XAI_PCM_RATE = PROVIDER_PCM_RATE;
 
 export function floatTo16BitPCM(float32: Float32Array): ArrayBuffer {
 	const out = new ArrayBuffer(float32.length * 2);
@@ -62,18 +68,20 @@ export function resampleLinear(
 	return out;
 }
 
-/** Convert worklet float frames at `ctxRate` → base64 PCM16 at 24 kHz for append. */
+/** Convert worklet float frames at `ctxRate` → base64 PCM16 at provider rate for append. */
 export function floatFramesToAppendBase64(float32: Float32Array, ctxRate: number): string {
-	const at24k =
-		ctxRate === TARGET_RATE ? float32 : resampleLinear(float32, ctxRate, TARGET_RATE);
-	return arrayBufferToBase64(floatTo16BitPCM(at24k));
+	const atProviderRate =
+		ctxRate === PROVIDER_PCM_RATE
+			? float32
+			: resampleLinear(float32, ctxRate, PROVIDER_PCM_RATE);
+	return arrayBufferToBase64(floatTo16BitPCM(atProviderRate));
 }
 
-/** Decode a base64 PCM16 delta (24 kHz) → float samples at `ctxRate` for playback. */
+/** Decode a base64 PCM16 delta (provider rate) → float samples at `ctxRate` for playback. */
 export function deltaBase64ToPlaybackFloat(base64: string, ctxRate: number): Float32Array {
 	const int16 = base64ToInt16(base64);
 	const f32 = int16ToFloat32(int16);
-	return ctxRate === TARGET_RATE ? f32 : resampleLinear(f32, TARGET_RATE, ctxRate);
+	return ctxRate === PROVIDER_PCM_RATE
+		? f32
+		: resampleLinear(f32, PROVIDER_PCM_RATE, ctxRate);
 }
-
-export const XAI_PCM_RATE = TARGET_RATE;

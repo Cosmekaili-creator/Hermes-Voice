@@ -3,6 +3,7 @@ import { getLocale, t, type MessageKey, type VoiceErrorCode } from '$lib/i18n';
 import { createMicCapture, type CaptureHandle } from './audioCapture';
 import { createPlayback, type PlaybackHandle } from './audioPlayback';
 import { buildHermesVoiceInstructions } from './instructions';
+import { PROVIDER_PCM_RATE } from './pcm';
 import {
 	createRealtimeClient,
 	type RealtimeClient,
@@ -361,7 +362,7 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 	async function ensureAudio(): Promise<AudioContext> {
 		if (!audioCtx) {
 			try {
-				audioCtx = new AudioContext({ sampleRate: 24000 });
+				audioCtx = new AudioContext({ sampleRate: PROVIDER_PCM_RATE });
 			} catch {
 				audioCtx = new AudioContext();
 			}
@@ -740,7 +741,7 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 					playAnalyser = playback.analyser;
 				} else if (!audioCtx) {
 					try {
-						audioCtx = new AudioContext({ sampleRate: 24000 });
+						audioCtx = new AudioContext({ sampleRate: PROVIDER_PCM_RATE });
 						if (audioCtx.state === 'running') {
 							playback = createPlayback(audioCtx);
 							playAnalyser = playback.analyser;

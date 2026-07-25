@@ -1,4 +1,4 @@
-import { arrayBufferToBase64, resampleLinear, XAI_PCM_RATE } from './pcm';
+import { arrayBufferToBase64, PROVIDER_PCM_RATE, resampleLinear } from './pcm';
 
 export type CaptureHandle = {
 	stream: MediaStream;
@@ -54,13 +54,15 @@ export async function createMicCapture(ctx: AudioContext): Promise<CaptureHandle
 		for (let i = 0; i < int16.length; i++) {
 			float[i] = int16[i]! / (int16[i]! < 0 ? 0x8000 : 0x7fff);
 		}
-		const at24k =
-			ctxRate === XAI_PCM_RATE ? float : resampleLinear(float, ctxRate, XAI_PCM_RATE);
+		const atProviderRate =
+			ctxRate === PROVIDER_PCM_RATE
+				? float
+				: resampleLinear(float, ctxRate, PROVIDER_PCM_RATE);
 
-		const pcmBuf = new ArrayBuffer(at24k.length * 2);
+		const pcmBuf = new ArrayBuffer(atProviderRate.length * 2);
 		const view = new DataView(pcmBuf);
-		for (let i = 0; i < at24k.length; i++) {
-			const s = Math.max(-1, Math.min(1, at24k[i]!));
+		for (let i = 0; i < atProviderRate.length; i++) {
+			const s = Math.max(-1, Math.min(1, atProviderRate[i]!));
 			view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
 		}
 		onPcm(arrayBufferToBase64(pcmBuf));

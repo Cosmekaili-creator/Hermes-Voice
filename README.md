@@ -85,7 +85,7 @@ SvelteKit ──POST /api/hermes──► Hermes Agent (:8642)
 
 ## Current limits
 
-- **xAI only** (no OpenAI Realtime / other providers yet)
+- **xAI only** — a thin provider adapter seam exists (`src/lib/providers/`), but there is still no second vendor or UI picker (see [docs/CONFIGURATION.md](docs/CONFIGURATION.md) capability matrix)
 - Single shared URL key (not multi-user accounts)
 - Talk modes: **push-to-talk** (default) or **hands-free** (server VAD); not always-on without arming
 

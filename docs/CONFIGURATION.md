@@ -20,4 +20,15 @@ Copy `.env.example` → `.env` (never commit `.env`).
 
 ## Voice provider
 
-**xAI realtime only** for now (`grok-voice-latest`, voice `eve`). Audio WebSocket is browser → `wss://api.x.ai` using an ephemeral `xai-client-secret.*` minted by `POST /api/session`.
+**Active provider:** `xai` only (`getActiveProvider()` in `src/lib/providers/`). Adapter seam lives under `src/lib/providers/`; no vendor picker in the UI yet.
+
+| | xAI |
+|--|-----|
+| Model / voice | `grok-voice-latest` / `eve` |
+| PCM | 24 kHz |
+| Mint | Ephemeral client secret (`POST /api/session` → `api.x.ai` `client_secrets`) |
+| Transport | Browser WebSocket `wss://api.x.ai` with `xai-client-secret.*` subprotocol |
+| Server VAD | Yes (hands-free talk mode) |
+| Tools | Yes (`ask_hermes` via `session.update`) |
+
+Capability matrix stub: `src/lib/providers/matrix.ts` (`CAPABILITY_MATRIX` / `getActiveCapabilities()`).
