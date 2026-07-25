@@ -1,25 +1,52 @@
 import { pulse } from '$lib/haptics';
+import { getLocale, t, type MessageKey, type VoiceErrorCode } from '$lib/i18n';
 import { createMicCapture, type CaptureHandle } from './audioCapture';
 import { createPlayback, type PlaybackHandle } from './audioPlayback';
+import { buildHermesVoiceInstructions } from './instructions';
 import { createRealtimeClient, type RealtimeClient, type RealtimeServerEvent } from './realtimeClient';
 
 export type VoiceDemoState = 'idle' | 'listening' | 'thinking' | 'speaking';
 
-const LABELS = {
-	idle: 'Press to talk',
-	listening: 'Listening… press again when finished',
-	thinking: 'One moment…',
-	hermesWorking: 'Hermes is working…',
-	hermesStill: 'Still on it…',
-	hermesAlmost: 'Almost there…',
-	speaking: 'Hermes speaking…',
-	connecting: 'Connecting…',
-	cancel: 'Cancel',
-	cancelArm: 'Tap again to cancel',
-	cancelled: 'Cancelled'
-} as const;
+type StatusOverride =
+	| null
+	| { kind: 'key'; key: MessageKey }
+	| { kind: 'raw'; text: string };
 
-const WAIT_PHRASES = [LABELS.hermesWorking, LABELS.hermesStill, LABELS.hermesAlmost] as const;
+const WAIT_KEYS = [
+	'status.hermesWorking',
+	'status.hermesStill',
+	'status.hermesAlmost'
+] as const satisfies readonly MessageKey[];
+
+const CONNECT_ERROR_CODES = {
+	sessionConnectTimeout: 'error.sessionConnectTimeout',
+	websocketError: 'error.websocketError',
+	websocketClosed: 'error.websocketClosed',
+	websocketFailed: 'error.websocketFailed',
+	realtimeSessionError: 'error.realtimeSessionError'
+} as const satisfies Record<string, VoiceErrorCode>;
+
+class VoiceAppError extends Error {
+	readonly code: VoiceErrorCode;
+	readonly reconnect: boolean;
+
+	constructor(code: VoiceErrorCode, reconnect = false) {
+		super(code);
+		this.name = 'VoiceAppError';
+		this.code = code;
+		this.reconnect = reconnect;
+	}
+}
+
+class VoiceRawError extends Error {
+	readonly reconnect: boolean;
+
+	constructor(message: string, reconnect = false) {
+		super(message);
+		this.name = 'VoiceRawError';
+		this.reconnect = reconnect;
+	}
+}
 
 const THINK_TIMEOUT_MS = 18000;
 const HERMES_BRIDGE_TIMEOUT_MS = 150_000;
@@ -36,7 +63,7 @@ type MintResult = { value: string; expires_at: number };
  */
 export function createVoiceDemo(getKey: () => string = () => '') {
 	let state = $state<VoiceDemoState>('idle');
-	let statusOverride = $state<string | null>(null);
+	let statusOverride = $state<StatusOverride>(null);
 	let busy = $state(false);
 	let needsReconnect = $state(false);
 	let hermesBridgeActive = $state(false);
@@ -49,18 +76,19 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 	let playAnalyser = $state<AnalyserNode | null>(null);
 
 	const statusLabel = $derived.by(() => {
-		if (statusOverride) return statusOverride;
-		if (busy && state === 'idle') return LABELS.connecting;
-		if (hermesBridgeActive && state === 'thinking') return LABELS.hermesWorking;
+		if (statusOverride?.kind === 'raw') return statusOverride.text;
+		if (statusOverride?.kind === 'key') return t(statusOverride.key);
+		if (busy && state === 'idle') return t('status.connecting');
+		if (hermesBridgeActive && state === 'thinking') return t('status.hermesWorking');
 		switch (state) {
 			case 'idle':
-				return LABELS.idle;
+				return t('status.idle');
 			case 'listening':
-				return LABELS.listening;
+				return t('status.listening');
 			case 'thinking':
-				return LABELS.thinking;
+				return t('status.thinking');
 			case 'speaking':
-				return LABELS.speaking;
+				return t('status.speaking');
 		}
 	});
 
@@ -125,7 +153,7 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 	function updateWaitStatus() {
 		if (!hermesBridgeActive || destroyed || cancelArmed) return;
 		waitElapsedSec = Math.max(0, Math.floor((Date.now() - hermesStartedAt) / 1000));
-		statusOverride = WAIT_PHRASES[waitPhraseIndex % WAIT_PHRASES.length];
+		statusOverride = { kind: 'key', key: WAIT_KEYS[waitPhraseIndex % WAIT_KEYS.length] };
 	}
 
 	function startWaitRotation() {
@@ -142,7 +170,7 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 				waitPhraseIndex += 1;
 			}
 			if (!cancelArmed) {
-				statusOverride = WAIT_PHRASES[waitPhraseIndex % WAIT_PHRASES.length];
+				statusOverride = { kind: 'key', key: WAIT_KEYS[waitPhraseIndex % WAIT_KEYS.length] };
 			}
 		}, WAIT_TICK_MS);
 	}
@@ -156,7 +184,7 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 		}
 	}
 
-	function setIdle(message?: string, reconnect = false) {
+	function setIdle(override: StatusOverride = null, reconnect = false) {
 		clearThinkTimer();
 		clearCancelArm();
 		clearWaitRotation();
@@ -172,12 +200,12 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 		hermesBridgeActive = false;
 		suppressIdleForTool = false;
 		state = 'idle';
-		statusOverride = message ?? null;
+		statusOverride = override;
 		needsReconnect = reconnect;
 		capture?.stop();
 	}
 
-	function fail(message: string, opts?: { reconnect?: boolean }) {
+	function fail(code: VoiceErrorCode, opts?: { reconnect?: boolean }) {
 		capture?.stop();
 		playback?.interrupt();
 		try {
@@ -194,7 +222,27 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 			client = null;
 			token = null;
 		}
-		setIdle(message, opts?.reconnect === true);
+		setIdle({ kind: 'key', key: code }, opts?.reconnect === true);
+	}
+
+	function failRaw(vendorMessage: string, opts?: { reconnect?: boolean }) {
+		capture?.stop();
+		playback?.interrupt();
+		try {
+			client?.clearInputBuffer();
+		} catch {
+			/* ignore */
+		}
+		if (opts?.reconnect) {
+			try {
+				client?.close();
+			} catch {
+				/* ignore */
+			}
+			client = null;
+			token = null;
+		}
+		setIdle({ kind: 'raw', text: vendorMessage }, opts?.reconnect === true);
 	}
 
 	function confirmCancelHermes() {
@@ -219,7 +267,7 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 			/* ignore */
 		}
 		playback?.interrupt();
-		setIdle(LABELS.cancelled);
+		setIdle({ kind: 'key', key: 'status.cancelled' });
 	}
 
 	function armOrCancelHermes() {
@@ -230,7 +278,7 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 		}
 		pulse(6);
 		cancelArmed = true;
-		statusOverride = LABELS.cancelArm;
+		statusOverride = { kind: 'key', key: 'status.cancelArm' };
 		if (cancelArmTimer !== null) clearTimeout(cancelArmTimer);
 		cancelArmTimer = setTimeout(() => {
 			cancelArmTimer = null;
@@ -285,18 +333,29 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 			body: '{}'
 		});
 		if (!res.ok) {
-			if (res.status === 401) throw new Error('Session unauthorized');
-			if (res.status === 500) throw new Error('Session unavailable');
-			throw new Error('Session request failed');
+			if (res.status === 401) throw new VoiceAppError('error.sessionUnauthorized', true);
+			if (res.status === 500) throw new VoiceAppError('error.sessionUnavailable', true);
+			throw new VoiceAppError('error.sessionRequestFailed', true);
 		}
 		const body = (await res.json()) as { value?: string; expires_at?: number };
 		if (typeof body.value !== 'string' || body.value.length === 0) {
-			throw new Error('Session unavailable');
+			throw new VoiceAppError('error.sessionUnavailable', true);
 		}
 		return {
 			value: body.value,
 			expires_at: typeof body.expires_at === 'number' ? body.expires_at : 0
 		};
+	}
+
+	function connectFailure(err: unknown): never {
+		if (err instanceof VoiceAppError) throw err;
+		if (err instanceof VoiceRawError) throw err;
+		if (err instanceof Error && err.message === 'destroyed') throw err;
+		const message = err instanceof Error ? err.message : '';
+		const mapped = CONNECT_ERROR_CODES[message as keyof typeof CONNECT_ERROR_CODES];
+		if (mapped) throw new VoiceAppError(mapped, true);
+		if (message) throw new VoiceRawError(message, true);
+		throw new VoiceAppError('error.couldNotStart', true);
 	}
 
 	async function runHermesBridge(callId: string, request: string, myTurn: number) {
@@ -321,12 +380,11 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 				})
 			});
 			if (!res.ok) {
+				if (res.status === 499) return;
 				output =
 					res.status === 504
 						? 'Hermes unavailable: timeout'
-						: res.status === 499
-							? 'Cancelled'
-							: `Hermes unavailable: HTTP ${res.status}`;
+						: `Hermes unavailable: HTTP ${res.status}`;
 			} else {
 				const body = (await res.json()) as { text?: string };
 				const text = typeof body.text === 'string' ? body.text.trim() : '';
@@ -342,7 +400,6 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 		}
 
 		if (destroyed || myTurn !== turnId) return;
-		if (output === 'Cancelled') return;
 
 		try {
 			client?.sendFunctionCallOutput(callId, output);
@@ -355,11 +412,11 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 			thinkTimer = setTimeout(() => {
 				if (destroyed || myTurn !== turnId) return;
 				if (state === 'thinking') {
-					fail('No reply — try again');
+					fail('error.noReply');
 				}
 			}, THINK_TIMEOUT_MS);
 		} catch {
-			fail('Could not continue after Hermes');
+			fail('error.couldNotContinue');
 		}
 	}
 
@@ -374,7 +431,7 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 		thinkTimer = setTimeout(() => {
 			if (destroyed || myTurn !== turnId) return;
 			if (hermesBridgeActive || suppressIdleForTool || state === 'thinking') {
-				fail('Hermes took too long — try again');
+				fail('error.hermesTimeout');
 			}
 		}, HERMES_BRIDGE_TIMEOUT_MS);
 	}
@@ -386,7 +443,7 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 		beginHermesWorkingUi(myTurn);
 
 		if (!callId) {
-			fail('Voice tool error');
+			fail('error.voiceToolError');
 			return;
 		}
 
@@ -405,7 +462,7 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 					endHermesBridgeUi();
 					statusOverride = null;
 				} catch {
-					fail('Voice tool error');
+					fail('error.voiceToolError');
 				}
 			})();
 			return;
@@ -432,7 +489,7 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 					endHermesBridgeUi();
 					statusOverride = null;
 				} catch {
-					fail('Voice tool error');
+					fail('error.voiceToolError');
 				}
 			})();
 			return;
@@ -447,8 +504,9 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 		switch (event.type) {
 			case 'error': {
 				const msg =
-					(typeof event.error?.message === 'string' && event.error.message) || 'Voice error';
-				fail(msg);
+					(typeof event.error?.message === 'string' && event.error.message) || '';
+				if (msg) failRaw(msg);
+				else fail('error.voiceError');
 				return;
 			}
 			case 'response.function_call_arguments.delta':
@@ -506,16 +564,24 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 				onEvent: (ev) => handleServerEvent(ev, turnId),
 				onError: (message) => {
 					if (destroyed) return;
-					if (state !== 'idle') fail(message);
+					if (state !== 'idle') {
+						const mapped = CONNECT_ERROR_CODES[message as keyof typeof CONNECT_ERROR_CODES];
+						if (mapped) fail(mapped);
+						else failRaw(message);
+					}
 				},
 				onClose: () => {
 					if (destroyed) return;
 					if (state === 'listening' || state === 'thinking' || state === 'speaking') {
-						fail('Connection lost — press to reconnect', { reconnect: true });
+						fail('error.connectionLost', { reconnect: true });
 					}
 				}
 			});
-			await rt.connect(token.value);
+			try {
+				await rt.connect(token.value, buildHermesVoiceInstructions(getLocale()));
+			} catch (err) {
+				connectFailure(err);
+			}
 			if (destroyed) {
 				rt.close();
 				throw new Error('destroyed');
@@ -620,15 +686,22 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 			}
 			const name = err instanceof DOMException ? err.name : '';
 			if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
-				fail('Microphone denied — allow access in the browser, then try again');
+				fail('error.micDenied');
 				return;
 			}
-			const message = err instanceof Error ? err.message : 'Could not start voice';
-			const reconnect =
-				/websocket|session|connect|unauthorized|network|destroyed/i.test(message) ||
-				message === 'Session request failed' ||
-				message === 'Session unavailable';
-			fail(message === 'destroyed' ? 'Could not start voice' : message, { reconnect });
+			if (err instanceof VoiceAppError) {
+				fail(err.code, { reconnect: err.reconnect });
+				return;
+			}
+			if (err instanceof VoiceRawError) {
+				failRaw(err.message, { reconnect: err.reconnect });
+				return;
+			}
+			if (err instanceof Error && err.message === 'destroyed') {
+				fail('error.couldNotStart');
+				return;
+			}
+			fail('error.couldNotStart');
 		}
 	}
 
@@ -646,7 +719,7 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 		try {
 			client.commitAndRespond();
 		} catch {
-			fail('Could not send audio');
+			fail('error.couldNotSendAudio');
 			return;
 		}
 
@@ -654,7 +727,7 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 		thinkTimer = setTimeout(() => {
 			if (destroyed || myTurn !== turnId) return;
 			if (state === 'thinking' && !hermesBridgeActive) {
-				fail('No reply — try again');
+				fail('error.noReply');
 			}
 		}, THINK_TIMEOUT_MS);
 	}
@@ -693,6 +766,11 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 			return;
 		}
 		void startListening();
+	}
+
+	function refreshInstructions() {
+		if (!client?.open) return;
+		client.updateInstructions(buildHermesVoiceInstructions(getLocale()));
 	}
 
 	function destroy() {
@@ -762,6 +840,7 @@ export function createVoiceDemo(getKey: () => string = () => '') {
 		},
 		warm,
 		toggle,
+		refreshInstructions,
 		destroy
 	};
 }

@@ -1,4 +1,3 @@
-import { HERMES_VOICE_INSTRUCTIONS } from './instructions';
 import { VOICE_TOOLS } from './tools';
 
 const REALTIME_URL = 'wss://api.x.ai/v1/realtime?model=grok-voice-latest';
@@ -24,7 +23,8 @@ export type RealtimeClientHandlers = {
 export type RealtimeClient = {
 	readonly ready: boolean;
 	readonly open: boolean;
-	connect(token: string): Promise<void>;
+	connect(token: string, instructions: string): Promise<void>;
+	updateInstructions(instructions: string): void;
 	send(obj: Record<string, unknown>): void;
 	appendAudio(base64Pcm16: string): void;
 	commitAndRespond(): void;
@@ -35,13 +35,13 @@ export type RealtimeClient = {
 	close(): void;
 };
 
-function sessionUpdatePayload() {
+function sessionUpdatePayload(instructions: string) {
 	return {
 		type: 'session.update',
 		session: {
 			model: 'grok-voice-latest',
 			voice: 'eve',
-			instructions: HERMES_VOICE_INSTRUCTIONS,
+			instructions,
 			turn_detection: null,
 			tools: [...VOICE_TOOLS],
 			audio: {
@@ -86,7 +86,12 @@ export function createRealtimeClient(handlers: RealtimeClientHandlers = {}): Rea
 		}
 	}
 
-	async function connect(token: string): Promise<void> {
+	function updateInstructions(instructions: string) {
+		if (!ws || ws.readyState !== WebSocket.OPEN) return;
+		send(sessionUpdatePayload(instructions));
+	}
+
+	async function connect(token: string, instructions: string): Promise<void> {
 		close();
 		const gen = ++connectGeneration;
 		ready = false;
@@ -105,19 +110,19 @@ export function createRealtimeClient(handlers: RealtimeClientHandlers = {}): Rea
 			try {
 				sock = new WebSocket(REALTIME_URL, [`xai-client-secret.${token}`]);
 			} catch (err) {
-				reject(err instanceof Error ? err : new Error('WebSocket failed'));
+				reject(err instanceof Error ? err : new Error('websocketFailed'));
 				return;
 			}
 			ws = sock;
 
 			const timeout = setTimeout(() => {
-				fail('Session connect timed out');
+				fail('sessionConnectTimeout');
 			}, 20000);
 
 			sock.onopen = () => {
 				if (gen !== connectGeneration) return;
 				handlers.onOpen?.();
-				send(sessionUpdatePayload());
+				send(sessionUpdatePayload(instructions));
 			};
 
 			sock.onmessage = (ev) => {
@@ -144,7 +149,7 @@ export function createRealtimeClient(handlers: RealtimeClientHandlers = {}): Rea
 				if (event.type === 'error') {
 					const msg =
 						(typeof event.error?.message === 'string' && event.error.message) ||
-						'Realtime session error';
+						'realtimeSessionError';
 					handlers.onError?.(msg);
 					if (!settled) {
 						fail(msg);
@@ -153,8 +158,8 @@ export function createRealtimeClient(handlers: RealtimeClientHandlers = {}): Rea
 			};
 
 			sock.onerror = () => {
-				handlers.onError?.('WebSocket error');
-				if (!settled) fail('WebSocket error');
+				handlers.onError?.('websocketError');
+				if (!settled) fail('websocketError');
 			};
 
 			sock.onclose = (closeEv) => {
@@ -163,7 +168,7 @@ export function createRealtimeClient(handlers: RealtimeClientHandlers = {}): Rea
 				if (ws === sock) ws = null;
 				handlers.onClose?.(closeEv);
 				if (!settled) {
-					fail(closeEv.reason || 'WebSocket closed');
+					fail(closeEv.reason || 'websocketClosed');
 				}
 			};
 		});
@@ -177,6 +182,7 @@ export function createRealtimeClient(handlers: RealtimeClientHandlers = {}): Rea
 			return !!ws && ws.readyState === WebSocket.OPEN;
 		},
 		connect,
+		updateInstructions,
 		send,
 		appendAudio(base64Pcm16: string) {
 			if (!ready) return;

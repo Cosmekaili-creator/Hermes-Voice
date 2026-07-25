@@ -1,4 +1,5 @@
 import type { Handle } from '@sveltejs/kit';
+import { LOCALE_COOKIE, resolveRequestLocale } from '$lib/i18n/resolve';
 
 function setSecurityHeaders(response: Response): void {
 	response.headers.set('X-Content-Type-Options', 'nosniff');
@@ -12,7 +13,14 @@ function setSecurityHeaders(response: Response): void {
 }
 
 export const handle: Handle = async ({ event, resolve }) => {
-	const response = await resolve(event);
+	event.locals.locale = resolveRequestLocale(
+		event.cookies.get(LOCALE_COOKIE),
+		event.request.headers.get('accept-language')
+	);
+
+	const response = await resolve(event, {
+		transformPageChunk: ({ html }) => html.replace('%lang%', event.locals.locale)
+	});
 	setSecurityHeaders(response);
 	return response;
 };

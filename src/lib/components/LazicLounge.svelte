@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { getLocale, t } from '$lib/i18n';
 	import { createVoiceDemo } from '$lib/voice/voiceDemo';
 	import { drawLazicLounge, type VizQuality } from '$lib/viz/lazicLounge';
 	import { createScreenWakeLock } from '$lib/wakeLock';
+	import LocaleSwitch from './LocaleSwitch.svelte';
 
 	// Capture ?k= once at boot (before parent replaceState hides it) for API fallback.
 	// Cookie remains primary; this keeps PWA sessions working when the WebView drops cookies.
@@ -34,20 +36,25 @@
 
 	const buttonLabel = $derived.by(() => {
 		if (demo.isHermesWorking) {
-			return demo.cancelArmed ? 'Tap again to cancel' : 'Cancel';
+			return demo.cancelArmed ? t('button.cancelArm') : t('button.cancel');
 		}
 		switch (demo.state) {
 			case 'idle':
-				if (demo.busy) return 'Connecting…';
-				if (demo.needsReconnect) return 'Reconnect';
-				return 'Press to talk';
+				if (demo.busy) return t('button.connecting');
+				if (demo.needsReconnect) return t('button.reconnect');
+				return t('button.pressToTalk');
 			case 'listening':
-				return 'Finish speaking';
+				return t('button.finishSpeaking');
 			case 'thinking':
-				return 'Hermes is thinking';
+				return t('button.hermesThinking');
 			case 'speaking':
-				return 'Stop Hermes';
+				return t('button.stopHermes');
 		}
+	});
+
+	$effect(() => {
+		getLocale();
+		demo.refreshInstructions();
 	});
 
 	function loungeRadius() {
@@ -176,6 +183,10 @@
 	<div class="glow-field" aria-hidden="true"></div>
 	<canvas class="viz" bind:this={canvasEl} aria-hidden="true"></canvas>
 
+	<div class="locale-corner">
+		<LocaleSwitch />
+	</div>
+
 	<div class="center">
 		<p class="brand">HERMES</p>
 		<p class="status" aria-live="polite">{demo.statusLabel}</p>
@@ -286,6 +297,13 @@
 		height: 100%;
 		display: block;
 		pointer-events: none;
+	}
+
+	.locale-corner {
+		position: absolute;
+		z-index: 4;
+		top: max(0.85rem, env(safe-area-inset-top));
+		right: max(0.85rem, env(safe-area-inset-right));
 	}
 
 	.center {

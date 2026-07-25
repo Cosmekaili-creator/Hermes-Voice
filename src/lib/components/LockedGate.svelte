@@ -1,8 +1,22 @@
+<script lang="ts">
+	import { browser } from '$app/environment';
+	import { page } from '$app/state';
+	import { getLocale, t, type Locale } from '$lib/i18n';
+	import LocaleSwitch from './LocaleSwitch.svelte';
+
+	const locale = $derived(
+		(browser ? getLocale() : page.data.locale) as Locale
+	);
+</script>
+
 <div class="gate">
 	<div class="glow" aria-hidden="true"></div>
+	<div class="locale-corner">
+		<LocaleSwitch />
+	</div>
 	<div class="copy">
 		<p class="brand">HERMES</p>
-		<h1>Access Restricted</h1>
+		<h1>{t('gate.accessRestricted', locale)}</h1>
 	</div>
 </div>
 
@@ -46,6 +60,13 @@
 			transform: scale(1.05);
 			opacity: 0.95;
 		}
+	}
+
+	.locale-corner {
+		position: absolute;
+		z-index: 2;
+		top: max(0.85rem, env(safe-area-inset-top));
+		right: max(0.85rem, env(safe-area-inset-right));
 	}
 
 	.copy {
