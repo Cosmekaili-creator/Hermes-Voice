@@ -98,9 +98,34 @@
 	// onMount — not $effect. warm() reads busy/state; an $effect would re-run on tap,
 	// destroy the session in cleanup, and leave the UI stuck on "Connecting…".
 	onMount(() => {
+		const onVisibilityChange = () => {
+			if (document.visibilityState === 'hidden') {
+				demo.suspendForBackground();
+			} else {
+				void demo.recoverConnection();
+			}
+		};
+		const onPageShow = (event: PageTransitionEvent) => {
+			// iOS may restore a frozen/bfcache page without a normal mount cycle.
+			if (event.persisted && document.visibilityState === 'visible') {
+				void demo.recoverConnection();
+			}
+		};
+		const onOnline = () => {
+			if (document.visibilityState === 'visible') {
+				void demo.recoverConnection();
+			}
+		};
+
+		document.addEventListener('visibilitychange', onVisibilityChange);
+		window.addEventListener('pageshow', onPageShow);
+		window.addEventListener('online', onOnline);
 		void wakeLock.enable();
 		void demo.warm();
 		return () => {
+			document.removeEventListener('visibilitychange', onVisibilityChange);
+			window.removeEventListener('pageshow', onPageShow);
+			window.removeEventListener('online', onOnline);
 			void wakeLock.disable();
 			demo.destroy();
 		};

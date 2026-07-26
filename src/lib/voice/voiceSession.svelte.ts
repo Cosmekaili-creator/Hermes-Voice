@@ -36,6 +36,28 @@ const CONNECT_ERROR_CODES = {
 } as const satisfies Record<string, VoiceErrorCode>;
 
 const TALK_MODE_STORAGE_KEY = 'hermes-voice.talkMode';
+/** Per-tab Hermes backend conversation ID; survives Safari freeze/reload, not a new tab. */
+const VOICE_SESSION_STORAGE_KEY = 'hermes-voice.session-id';
+
+function createVoiceSessionId(): string {
+	return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+		? crypto.randomUUID()
+		: `voice-${Date.now()}`;
+}
+
+function readStoredVoiceSessionId(): string {
+	if (typeof sessionStorage === 'undefined') return createVoiceSessionId();
+	try {
+		const existing = sessionStorage.getItem(VOICE_SESSION_STORAGE_KEY);
+		if (existing) return existing;
+		const id = createVoiceSessionId();
+		sessionStorage.setItem(VOICE_SESSION_STORAGE_KEY, id);
+		return id;
+	} catch {
+		// Private browsing/storage failures retain the original in-memory behaviour.
+		return createVoiceSessionId();
+	}
+}
 
 class VoiceAppError extends Error {
 	readonly code: VoiceErrorCode;
@@ -183,12 +205,10 @@ export function createVoiceDemo() {
 	let waitTickCount = 0;
 	let warmInFlight: Promise<void> | null = null;
 	let realtimeInFlight: Promise<RealtimeClient> | null = null;
+	let recoveryInFlight: Promise<void> | null = null;
 	let turnId = 0;
 	let destroyed = false;
-	const voiceSessionId =
-		typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-			? crypto.randomUUID()
-			: `voice-${Date.now()}`;
+	const voiceSessionId = readStoredVoiceSessionId();
 
 	function turnDetectionForMode(mode: TalkMode = talkMode): TurnDetection {
 		return mode === 'handsfree' ? HANDS_FREE_TURN_DETECTION : null;
@@ -793,6 +813,87 @@ export function createVoiceDemo() {
 		}
 	}
 
+	/**
+	 * iOS Safari may suspend or strand a WebSocket when the app backgrounds or
+	 * its network changes. Stop the active realtime turn cleanly; the stable
+	 * Hermes session ID remains intact for the next connection.
+	 */
+	function suspendForBackground() {
+		if (destroyed) return;
+		turnId += 1;
+		safeCancelResponse();
+		try {
+			client?.clearInputBuffer();
+		} catch {
+			/* ignore */
+		}
+		playback?.interrupt();
+		hardDisarmCapture();
+		setIdle();
+		try {
+			client?.close();
+		} catch {
+			/* ignore */
+		}
+		client = null;
+		token = null;
+	}
+
+	/** Force a fresh provider session after foregrounding or a network return. */
+	async function recoverConnection(): Promise<void> {
+		if (
+			destroyed ||
+			(typeof document !== 'undefined' && document.visibilityState !== 'visible') ||
+			(typeof navigator !== 'undefined' && navigator.onLine === false)
+		) {
+			return;
+		}
+		if (recoveryInFlight) return recoveryInFlight;
+
+		recoveryInFlight = (async () => {
+			turnId += 1;
+			safeCancelResponse();
+			hardDisarmCapture();
+			setIdle();
+			try {
+				client?.close();
+			} catch {
+				/* ignore */
+			}
+			client = null;
+			token = null;
+			busy = true;
+			needsReconnect = false;
+			statusOverride = null;
+
+			try {
+				await ensureRealtime();
+				if (destroyed) return;
+				busy = false;
+				state = 'idle';
+				statusOverride = null;
+				needsReconnect = false;
+			} catch (err) {
+				if (destroyed) return;
+				if (err instanceof VoiceAppError) {
+					setIdle({ kind: 'key', key: err.code }, err.reconnect);
+					return;
+				}
+				if (err instanceof VoiceRawError) {
+					setIdle({ kind: 'raw', text: err.message }, err.reconnect);
+					return;
+				}
+				setIdle({ kind: 'key', key: 'error.couldNotStart' }, true);
+			}
+		})();
+
+		try {
+			await recoveryInFlight;
+		} finally {
+			recoveryInFlight = null;
+		}
+	}
+
 	async function warm(): Promise<void> {
 		if (destroyed) return;
 		if (busy || state !== 'idle' || hermesBridgeActive) return;
@@ -1113,6 +1214,7 @@ export function createVoiceDemo() {
 		needsReconnect = false;
 		warmInFlight = null;
 		realtimeInFlight = null;
+		recoveryInFlight = null;
 		capture?.stop();
 		capture?.destroy();
 		capture = null;
@@ -1167,6 +1269,8 @@ export function createVoiceDemo() {
 			return playAnalyser;
 		},
 		warm,
+		suspendForBackground,
+		recoverConnection,
 		toggle,
 		setTalkMode,
 		refreshInstructions,
