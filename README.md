@@ -14,6 +14,19 @@ Private **realtime voice** web UI for [Hermes Agent](https://github.com/NousRese
 
 Bring your own provider key and Hermes instance.
 
+## Screenshots
+
+<p align="center">
+  <img src="graphics/screenshots/main-interface.jpg" alt="Hermes Voice Lounge — idle with press-to-talk" width="280" />
+  &nbsp;&nbsp;
+  <img src="graphics/screenshots/voice-active.jpg" alt="Hermes Voice Lounge — active listening / speaking ring" width="280" />
+</p>
+
+<p align="center">
+  <em>Left:</em> Lounge at rest (talk mode + language).
+  <em>Right:</em> Live session with the Lazic visualizer.
+</p>
+
 ## License
 
 [PolyForm Noncommercial 1.0.0](./LICENSE) — free for personal / non-commercial use.  
