@@ -7,8 +7,7 @@ import { CLIENT_SECRETS_URL, DEFAULT_MODEL, DEFAULT_TTL_SECONDS } from './consta
 export type MintProbeCode = 'missing_key' | 'mint_failed' | 'mint_upstream';
 
 export type MintProbeResult =
-	| { ok: true; value: string; expires_at: number }
-	| { ok: false; code: MintProbeCode };
+	{ ok: true; value: string; expires_at: number } | { ok: false; code: MintProbeCode };
 
 /**
  * Core mint — non-throwing. Optional apiKey override is for setup tests only.

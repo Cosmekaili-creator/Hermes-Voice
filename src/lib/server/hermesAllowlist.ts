@@ -3,7 +3,11 @@ import { isIP } from 'node:net';
 /** Block obvious cloud metadata / link-local targets. */
 export function isBlockedHost(hostname: string): boolean {
 	const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
-	if (host === 'metadata.google.internal' || host === 'metadata' || host.endsWith('.metadata.google.internal')) {
+	if (
+		host === 'metadata.google.internal' ||
+		host === 'metadata' ||
+		host.endsWith('.metadata.google.internal')
+	) {
 		return true;
 	}
 	if (host === '169.254.169.254' || host === 'fd00:ec2::254') {
@@ -37,15 +41,15 @@ export function isAllowedHermesHost(hostname: string): boolean {
 		if (n === null) return false;
 		// Bitwise & is Int32 — compare unsigned masks (>>> 0) so 192.168/172.16 work.
 		// 10.0.0.0/8
-		if (((n & 0xff000000) >>> 0) === 0x0a000000) return true;
+		if ((n & 0xff000000) >>> 0 === 0x0a000000) return true;
 		// 172.16.0.0/12
-		if (((n & 0xfff00000) >>> 0) === 0xac100000) return true;
+		if ((n & 0xfff00000) >>> 0 === 0xac100000) return true;
 		// 192.168.0.0/16
-		if (((n & 0xffff0000) >>> 0) === 0xc0a80000) return true;
+		if ((n & 0xffff0000) >>> 0 === 0xc0a80000) return true;
 		// 127.0.0.0/8
-		if (((n & 0xff000000) >>> 0) === 0x7f000000) return true;
+		if ((n & 0xff000000) >>> 0 === 0x7f000000) return true;
 		// block link-local 169.254.0.0/16
-		if (((n & 0xffff0000) >>> 0) === 0xa9fe0000) return false;
+		if ((n & 0xffff0000) >>> 0 === 0xa9fe0000) return false;
 		return false;
 	}
 

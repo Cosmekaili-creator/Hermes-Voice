@@ -1,9 +1,6 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
 import { requireOwner } from '$lib/server/auth';
-import {
-	ensureBindingsImported,
-	isMultiUserMode
-} from '$lib/server/bindings.server';
+import { ensureBindingsImported, isMultiUserMode } from '$lib/server/bindings.server';
 import { assertSameOrigin } from '$lib/server/origin.server';
 import { enforceRateLimit, RATE } from '$lib/server/rateLimit.server';
 import { probeHermes, validateHermesApiBase } from '$lib/server/setupProbes.server';
@@ -29,11 +26,15 @@ export const POST: RequestHandler = async (event) => {
 
 	const body = await event.request.json().catch(() => ({}));
 	const overrideBase =
-		body && typeof body === 'object' && typeof (body as { hermesApiBase?: unknown }).hermesApiBase === 'string'
+		body &&
+		typeof body === 'object' &&
+		typeof (body as { hermesApiBase?: unknown }).hermesApiBase === 'string'
 			? String((body as { hermesApiBase: string }).hermesApiBase).trim()
 			: '';
 	const overrideKey =
-		body && typeof body === 'object' && typeof (body as { hermesApiKey?: unknown }).hermesApiKey === 'string'
+		body &&
+		typeof body === 'object' &&
+		typeof (body as { hermesApiKey?: unknown }).hermesApiKey === 'string'
 			? String((body as { hermesApiKey: string }).hermesApiKey).trim()
 			: '';
 

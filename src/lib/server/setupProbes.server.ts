@@ -24,9 +24,7 @@ function nonEmpty(value: unknown): string | null {
 	return t.length > 0 ? t : null;
 }
 
-export type HermesBaseCheck =
-	| { ok: true; base: string }
-	| { ok: false; code: string };
+export type HermesBaseCheck = { ok: true; base: string } | { ok: false; code: string };
 
 export function validateHermesApiBase(raw: string | null): HermesBaseCheck {
 	const base = nonEmpty(raw);
@@ -51,8 +49,7 @@ export function validateHermesApiBase(raw: string | null): HermesBaseCheck {
 }
 
 export type HermesFetchTarget =
-	| { ok: true; base: string; fetchBase: string; hostHeader?: string }
-	| { ok: false; code: string };
+	{ ok: true; base: string; fetchBase: string; hostHeader?: string } | { ok: false; code: string };
 
 /**
  * Validate base, then for non-IP hostnames resolve DNS and re-check the IP allowlist.
@@ -132,9 +129,7 @@ export async function probeHermes(opts: {
 	if (!key) return { ok: false, code: 'missing_key' };
 
 	const base = target.fetchBase;
-	const hostHeaders: Record<string, string> = target.hostHeader
-		? { Host: target.hostHeader }
-		: {};
+	const hostHeaders: Record<string, string> = target.hostHeader ? { Host: target.hostHeader } : {};
 	const signal = AbortSignal.timeout(PROBE_TIMEOUT_MS);
 
 	let healthRes: Response;

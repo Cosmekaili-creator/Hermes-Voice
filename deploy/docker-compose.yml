@@ -24,7 +24,7 @@ services:
       ENV_FILE: /app/.env
       BINDINGS_FILE: /app/data/bindings.json
       HOST: 127.0.0.1
-      PORT: "4331"
+      PORT: '4331'
     volumes:
       # RW so the setup wizard / multi-user enable can persist.
       - ../.env:/app/.env

@@ -302,26 +302,42 @@
 							<div class="meta">
 								<strong>{u.label}</strong>
 								<span class="muted"
-									>{u.role} · {u.enabled ? t('users.enabledLabel', locale) : t('users.disabledLabel', locale)} · {u.hermesApiBase}</span
+									>{u.role} · {u.enabled
+										? t('users.enabledLabel', locale)
+										: t('users.disabledLabel', locale)} · {u.hermesApiBase}</span
 								>
 								<span class="muted"
-									>{t('users.voiceHint', locale)} {u.voiceKeyHint} · {t('users.keyHint', locale)}
+									>{t('users.voiceHint', locale)}
+									{u.voiceKeyHint} · {t('users.keyHint', locale)}
 									{u.hermesApiKeyHint}</span
 								>
 							</div>
 							<div class="row-actions">
-								<button type="button" class="btn ghost" disabled={saving} onclick={() => startEdit(u)}
-									>{t('users.edit', locale)}</button
+								<button
+									type="button"
+									class="btn ghost"
+									disabled={saving}
+									onclick={() => startEdit(u)}>{t('users.edit', locale)}</button
 								>
-								<button type="button" class="btn ghost" disabled={saving} onclick={() => probeUser(u)}
-									>{t('users.probe', locale)}</button
+								<button
+									type="button"
+									class="btn ghost"
+									disabled={saving}
+									onclick={() => probeUser(u)}>{t('users.probe', locale)}</button
 								>
-								<button type="button" class="btn ghost" disabled={saving} onclick={() => toggleEnabled(u)}
+								<button
+									type="button"
+									class="btn ghost"
+									disabled={saving}
+									onclick={() => toggleEnabled(u)}
 									>{u.enabled ? t('users.disable', locale) : t('users.enableRow', locale)}</button
 								>
 								{#if u.role !== 'owner'}
-									<button type="button" class="btn ghost" disabled={saving} onclick={() => removeUser(u)}
-										>{t('users.delete', locale)}</button
+									<button
+										type="button"
+										class="btn ghost"
+										disabled={saving}
+										onclick={() => removeUser(u)}>{t('users.delete', locale)}</button
 									>
 								{/if}
 							</div>

@@ -6,14 +6,14 @@ For **multi-user N-profile ops**, Compose examples, and Hermes networking/SSRF n
 
 ## Typical layout
 
-| Path | Role |
-|------|------|
-| App source | wherever you clone this repo |
-| Runtime | e.g. `/opt/hermes-voice` (`build/`, prod `node_modules`, `.env` mode `600`) |
-| systemd | `deploy/hermes-voice.service` |
-| nginx | `deploy/nginx-example.conf` |
+| Path               | Role                                                                                 |
+| ------------------ | ------------------------------------------------------------------------------------ |
+| App source         | wherever you clone this repo                                                         |
+| Runtime            | e.g. `/opt/hermes-voice` (`build/`, prod `node_modules`, `.env` mode `600`)          |
+| systemd            | `deploy/hermes-voice.service`                                                        |
+| nginx              | `deploy/nginx-example.conf`                                                          |
 | Compose (optional) | `deploy/Dockerfile`, `deploy/docker-compose.yml` — see [docs/OPS.md](../docs/OPS.md) |
-| Bindings sample | `deploy/bindings.example.json` |
+| Bindings sample    | `deploy/bindings.example.json`                                                       |
 
 ## Build & install
 

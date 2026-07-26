@@ -14,7 +14,6 @@
 	const freqBuf = new Uint8Array(256);
 	const idleBars = new Uint8Array(256); // near-flat idle/thinking — no fake speech motion
 
-
 	let canvasEl: HTMLCanvasElement | undefined = $state();
 
 	const pressed = $derived(demo.state === 'listening' || demo.state === 'speaking');
@@ -125,8 +124,8 @@
 		let raf = 0;
 		const frame = (now: number) => {
 			const state = demo.state;
-			let spectrum: Uint8Array = idleBars;
-			let energy = ambientIntensity;
+			let spectrum: Uint8Array;
+			let energy: number;
 
 			if (state === 'listening') {
 				const mic = demo.micAnalyser;
@@ -224,8 +223,7 @@
 		overflow: hidden;
 		color: var(--ink);
 		font-family: 'DM Sans', system-ui, sans-serif;
-		background:
-			radial-gradient(ellipse at 50% 45%, #0d3a40 0%, #061618 42%, #030a0c 100%);
+		background: radial-gradient(ellipse at 50% 45%, #0d3a40 0%, #061618 42%, #030a0c 100%);
 	}
 
 	.glow-field {

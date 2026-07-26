@@ -12,10 +12,7 @@ export {
 	LOCALE_COOKIE,
 	LOCALE_STORAGE_KEY
 } from './locale.svelte.js';
-export {
-	resolveRequestLocale,
-	localeFromAcceptLanguage
-} from './resolve.js';
+export { resolveRequestLocale, localeFromAcceptLanguage } from './resolve.js';
 export {
 	LOCALES,
 	isLocale,

@@ -1,0 +1,23 @@
+# Package Managers
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+bun.lock
+bun.lockb
+
+# Build / generated output
+/build
+/.svelte-kit
+node_modules
+
+# Static assets & binaries (never reformat)
+/static/
+/graphics/
+
+# Local archives (may exist outside the tracked tree on some checkouts)
+Archives/
+**/Archives/**
+
+# Playwright artifacts
+/test-results
+/playwright-report

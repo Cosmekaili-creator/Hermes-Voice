@@ -71,9 +71,7 @@ export function resampleLinear(
 /** Convert worklet float frames at `ctxRate` → base64 PCM16 at provider rate for append. */
 export function floatFramesToAppendBase64(float32: Float32Array, ctxRate: number): string {
 	const atProviderRate =
-		ctxRate === PROVIDER_PCM_RATE
-			? float32
-			: resampleLinear(float32, ctxRate, PROVIDER_PCM_RATE);
+		ctxRate === PROVIDER_PCM_RATE ? float32 : resampleLinear(float32, ctxRate, PROVIDER_PCM_RATE);
 	return arrayBufferToBase64(floatTo16BitPCM(atProviderRate));
 }
 
@@ -81,7 +79,5 @@ export function floatFramesToAppendBase64(float32: Float32Array, ctxRate: number
 export function deltaBase64ToPlaybackFloat(base64: string, ctxRate: number): Float32Array {
 	const int16 = base64ToInt16(base64);
 	const f32 = int16ToFloat32(int16);
-	return ctxRate === PROVIDER_PCM_RATE
-		? f32
-		: resampleLinear(f32, PROVIDER_PCM_RATE, ctxRate);
+	return ctxRate === PROVIDER_PCM_RATE ? f32 : resampleLinear(f32, PROVIDER_PCM_RATE, ctxRate);
 }

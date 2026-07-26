@@ -92,7 +92,8 @@ export const fr = {
 	'wizard.hermesHint':
 		'Doit correspondre à API_SERVER_KEY de Hermes. Gardez Hermes hors d’Internet public.',
 	'wizard.originLabel': 'ORIGIN',
-	'wizard.originHint': 'Origine HTTPS publique (cookies SvelteKit). Vérification souple uniquement.',
+	'wizard.originHint':
+		'Origine HTTPS publique (cookies SvelteKit). Vérification souple uniquement.',
 	'wizard.test': 'Tester',
 	'wizard.testing': 'Test…',
 	'wizard.testOk': 'Connexion OK',
@@ -154,7 +155,8 @@ export const fr = {
 		'Le multi-utilisateur est désactivé. Activez-le pour importer le propriétaire depuis .env et en ajouter d’autres.',
 	'users.enable': 'Activer le multi-utilisateur',
 	'users.disableMode': 'Désactiver le multi-utilisateur',
-	'users.disableConfirm': 'Désactiver le multi-utilisateur et revenir au binding .env du propriétaire ?',
+	'users.disableConfirm':
+		'Désactiver le multi-utilisateur et revenir au binding .env du propriétaire ?',
 	'users.enabled': 'Multi-utilisateur activé',
 	'users.disabled': 'Multi-utilisateur désactivé',
 	'users.addTitle': 'Ajouter un utilisateur',

@@ -1,12 +1,7 @@
 import { env } from '$env/dynamic/private';
 import { error, type Cookies, type RequestEvent } from '@sveltejs/kit';
 import { createHmac } from 'node:crypto';
-import {
-	isAuthenticated,
-	requireOwner,
-	requireVoiceKey,
-	resolveBinding
-} from '$lib/server/auth';
+import { isAuthenticated, requireOwner, requireVoiceKey, resolveBinding } from '$lib/server/auth';
 import { isMultiUserMode } from '$lib/server/bindings.server';
 import { safeEqualStr } from '$lib/server/cryptoEqual.server';
 

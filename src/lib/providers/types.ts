@@ -32,15 +32,13 @@ export type VoiceInfo = {
 };
 
 /** Wire-level turn_detection for realtime session.update (xAI + OpenAI). */
-export type WireTurnDetection =
-	| null
-	| {
-			type: 'server_vad';
-			/** Silence before end-of-turn (ms). Provider default is often ~500. */
-			silence_duration_ms?: number;
-			threshold?: number;
-			prefix_padding_ms?: number;
-	  };
+export type WireTurnDetection = null | {
+	type: 'server_vad';
+	/** Silence before end-of-turn (ms). Provider default is often ~500. */
+	silence_duration_ms?: number;
+	threshold?: number;
+	prefix_padding_ms?: number;
+};
 
 /** Hands-free VAD — longer silence so short pauses mid-thought don't steal the turn. */
 export const HANDS_FREE_TURN_DETECTION = {

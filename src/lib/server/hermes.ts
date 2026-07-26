@@ -110,9 +110,7 @@ export async function callHermesChat(opts: {
 
 	const rawText = await upstream.text().catch(() => '');
 	if (!upstream.ok) {
-		console.error(
-			`Hermes chat/completions HTTP ${upstream.status}: ${redactForLog(rawText)}`
-		);
+		console.error(`Hermes chat/completions HTTP ${upstream.status}: ${redactForLog(rawText)}`);
 		error(502, 'Hermes request failed');
 	}
 

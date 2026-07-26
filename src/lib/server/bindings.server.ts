@@ -160,7 +160,8 @@ export async function loadBindings(): Promise<BindingsLoad> {
 		if (parsed === 'corrupt') return { status: 'corrupt' };
 		return { status: 'ok', file: parsed };
 	} catch (err) {
-		const code = err && typeof err === 'object' && 'code' in err ? (err as { code?: string }).code : '';
+		const code =
+			err && typeof err === 'object' && 'code' in err ? (err as { code?: string }).code : '';
 		if (code === 'ENOENT') return { status: 'missing' };
 		console.error('bindings read failed');
 		return { status: 'error' };
@@ -175,8 +176,7 @@ export async function readBindings(): Promise<BindingsFile> {
 }
 
 export type BindingsWriteResult =
-	| { ok: true; path: string }
-	| { ok: false; code: 'bindings_write_failed'; message?: string };
+	{ ok: true; path: string } | { ok: false; code: 'bindings_write_failed'; message?: string };
 
 export async function writeBindingsAtomic(next: BindingsFile): Promise<BindingsWriteResult> {
 	const filePath = resolveBindingsPath();
@@ -211,11 +211,7 @@ export function findOwner(users: Binding[]): Binding | null {
 	return users.find((u) => u.role === 'owner') ?? null;
 }
 
-export function voiceKeyTaken(
-	users: Binding[],
-	voiceKey: string,
-	exceptId?: string
-): boolean {
+export function voiceKeyTaken(users: Binding[], voiceKey: string, exceptId?: string): boolean {
 	for (const u of users) {
 		if (exceptId && u.id === exceptId) continue;
 		if (safeEqualStr(u.voiceKey, voiceKey)) return true;
@@ -301,8 +297,7 @@ export function syntheticEnvBinding(): Binding | null {
 		label: 'Owner',
 		role: 'owner',
 		voiceKey,
-		hermesApiBase:
-			readEnvTrimmed('HERMES_API_BASE')?.replace(/\/$/, '') || DEFAULT_HERMES_BASE,
+		hermesApiBase: readEnvTrimmed('HERMES_API_BASE')?.replace(/\/$/, '') || DEFAULT_HERMES_BASE,
 		hermesApiKey: readEnvTrimmed('HERMES_API_KEY') || '',
 		hermesSessionKey: readEnvTrimmed('HERMES_SESSION_KEY') || DEFAULT_SESSION_KEY,
 		enabled: true,

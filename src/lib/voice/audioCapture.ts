@@ -55,9 +55,7 @@ export async function createMicCapture(ctx: AudioContext): Promise<CaptureHandle
 			float[i] = int16[i]! / (int16[i]! < 0 ? 0x8000 : 0x7fff);
 		}
 		const atProviderRate =
-			ctxRate === PROVIDER_PCM_RATE
-				? float
-				: resampleLinear(float, ctxRate, PROVIDER_PCM_RATE);
+			ctxRate === PROVIDER_PCM_RATE ? float : resampleLinear(float, ctxRate, PROVIDER_PCM_RATE);
 
 		const pcmBuf = new ArrayBuffer(atProviderRate.length * 2);
 		const view = new DataView(pcmBuf);

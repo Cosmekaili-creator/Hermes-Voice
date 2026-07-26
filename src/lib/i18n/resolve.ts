@@ -34,12 +34,7 @@ export function resolveRequestLocale(
 }
 
 export function localeCookieValue(locale: Locale, secure: boolean): string {
-	const parts = [
-		`${LOCALE_COOKIE}=${locale}`,
-		'Path=/',
-		'Max-Age=31536000',
-		'SameSite=Lax'
-	];
+	const parts = [`${LOCALE_COOKIE}=${locale}`, 'Path=/', 'Max-Age=31536000', 'SameSite=Lax'];
 	if (secure) parts.push('Secure');
 	return parts.join('; ');
 }

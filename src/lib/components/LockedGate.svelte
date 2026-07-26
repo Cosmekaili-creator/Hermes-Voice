@@ -4,9 +4,7 @@
 	import { getLocale, t, type Locale } from '$lib/i18n';
 	import LocaleSwitch from './LocaleSwitch.svelte';
 
-	const locale = $derived(
-		(browser ? getLocale() : page.data.locale) as Locale
-	);
+	const locale = $derived((browser ? getLocale() : page.data.locale) as Locale);
 </script>
 
 <div class="gate">
@@ -34,8 +32,7 @@
 		place-items: center;
 		color: var(--ink);
 		font-family: 'DM Sans', system-ui, sans-serif;
-		background:
-			radial-gradient(ellipse at 50% 45%, #0d3a40 0%, #061618 42%, #030a0c 100%);
+		background: radial-gradient(ellipse at 50% 45%, #0d3a40 0%, #061618 42%, #030a0c 100%);
 	}
 
 	.glow {

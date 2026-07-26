@@ -86,7 +86,12 @@
 			{#if unlockError}
 				<p class="fail" role="alert">{t('wizard.unlockFailed', locale)}</p>
 			{/if}
-			<button type="button" class="btn" disabled={unlocking || !unlockToken.trim()} onclick={unlock}>
+			<button
+				type="button"
+				class="btn"
+				disabled={unlocking || !unlockToken.trim()}
+				onclick={unlock}
+			>
 				{t('wizard.unlock', locale)}
 			</button>
 		</div>

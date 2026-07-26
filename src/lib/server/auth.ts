@@ -65,10 +65,7 @@ export function extractVoiceKey(event: RequestEvent, body?: unknown): string | n
  * MULTI_USER≠1: synthetic owner from env (process.env-first).
  * MULTI_USER=1: bindings file ONLY (lazy import if empty); never env synthetic.
  */
-export async function resolveBinding(
-	event: RequestEvent,
-	body?: unknown
-): Promise<Binding | null> {
+export async function resolveBinding(event: RequestEvent, body?: unknown): Promise<Binding | null> {
 	const raw = extractVoiceKey(event, body);
 
 	if (!isMultiUserMode()) {
@@ -110,10 +107,7 @@ export async function isAuthenticated(event: RequestEvent, body?: unknown): Prom
 }
 
 /** For API routes: throw 401 if invalid; return resolved binding. */
-export async function requireVoiceKey(
-	event: RequestEvent,
-	body?: unknown
-): Promise<Binding> {
+export async function requireVoiceKey(event: RequestEvent, body?: unknown): Promise<Binding> {
 	const binding = await resolveBinding(event, body);
 	if (!binding) {
 		error(401, 'Unauthorized');

@@ -7,8 +7,7 @@ import { CLIENT_SECRETS_URL, DEFAULT_TTL_SECONDS } from './constants';
 export type MintProbeCode = 'missing_key' | 'mint_failed' | 'mint_upstream';
 
 export type MintProbeResult =
-	| { ok: true; value: string; expires_at: number }
-	| { ok: false; code: MintProbeCode };
+	{ ok: true; value: string; expires_at: number } | { ok: false; code: MintProbeCode };
 
 /**
  * Core mint — non-throwing. Optional apiKey override is for setup tests only.
@@ -93,7 +92,9 @@ export async function mintRealtimeClientSecret(opts?: {
  * Non-throwing mint probe for setup / owner health.
  * Discards value/expires_at — callers must never return them to the client.
  */
-export async function probeMint(apiKey?: string): Promise<{ ok: true } | { ok: false; code: MintProbeCode }> {
+export async function probeMint(
+	apiKey?: string
+): Promise<{ ok: true } | { ok: false; code: MintProbeCode }> {
 	const result = await mintInternal(apiKey);
 	if (!result.ok) return { ok: false, code: result.code };
 	return { ok: true };

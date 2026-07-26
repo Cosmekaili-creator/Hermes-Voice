@@ -14,11 +14,14 @@ export function redactForLog(input: string, max = 200): string {
 	s = s.replace(/('k'\s*:\s*')[^']*(')/gi, '$1[REDACTED]$2');
 
 	// Common secret / ephemeral shapes (xAI / OpenAI client secrets, sk-/ek_ keys, long opaque blobs)
-	s = s.replace(/xai-client-secret\.[A-Za-z0-9._\-]+/gi, 'xai-client-secret.[REDACTED]');
-	s = s.replace(/openai-insecure-api-key\.[A-Za-z0-9._\-]+/gi, 'openai-insecure-api-key.[REDACTED]');
+	s = s.replace(/xai-client-secret\.[A-Za-z0-9._-]+/gi, 'xai-client-secret.[REDACTED]');
+	s = s.replace(/openai-insecure-api-key\.[A-Za-z0-9._-]+/gi, 'openai-insecure-api-key.[REDACTED]');
 	s = s.replace(/\bek_[A-Za-z0-9]{8,}\b/g, 'ek_[REDACTED]');
 	s = s.replace(/\bsk-[A-Za-z0-9]{8,}\b/g, 'sk-[REDACTED]');
-	s = s.replace(/("(?:value|api_key|token|secret|password)"\s*:\s*")[^"]{8,}(")/gi, '$1[REDACTED]$2');
+	s = s.replace(
+		/("(?:value|api_key|token|secret|password)"\s*:\s*")[^"]{8,}(")/gi,
+		'$1[REDACTED]$2'
+	);
 
 	// Long base64-ish runs (audio / tokens) — keep short fragments for debug
 	s = s.replace(/[A-Za-z0-9+/]{48,}={0,2}/g, '[REDACTED_B64]');

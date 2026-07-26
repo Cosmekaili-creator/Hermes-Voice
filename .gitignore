@@ -36,3 +36,6 @@ debug-*.json
 # Local brainstorming / process notes (not published)
 docs/FUTURE.md
 docs/PIPELINE.md
+# Playwright
+test-results
+playwright-report

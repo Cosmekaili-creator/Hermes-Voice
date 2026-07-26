@@ -6,14 +6,14 @@ Config reference: [CONFIGURATION.md](CONFIGURATION.md).
 
 ## Cost (do not hide)
 
-| Resource | Single-user | Multi-user (N Voice users) |
-|----------|-------------|----------------------------|
-| Voice process | 1 | 1 |
-| Shared voice provider key | 1 (`XAI_API_KEY` or `OPENAI_API_KEY`) | 1 (same) |
-| Hermes gateway processes | 1 | **N** |
-| Hermes API ports | 1 (e.g. `8642`) | **N** distinct ports |
-| Hermes API keys | 1 | **N** |
-| `HERMES_HOME` / data dirs | 1 | **N** |
+| Resource                  | Single-user                           | Multi-user (N Voice users) |
+| ------------------------- | ------------------------------------- | -------------------------- |
+| Voice process             | 1                                     | 1                          |
+| Shared voice provider key | 1 (`XAI_API_KEY` or `OPENAI_API_KEY`) | 1 (same)                   |
+| Hermes gateway processes  | 1                                     | **N**                      |
+| Hermes API ports          | 1 (e.g. `8642`)                       | **N** distinct ports       |
+| Hermes API keys           | 1                                     | **N**                      |
+| `HERMES_HOME` / data dirs | 1                                     | **N**                      |
 
 N Voice users ≈ N Hermes profile processes. Isolation is the profile, not `HERMES_SESSION_KEY` alone.
 
@@ -70,11 +70,11 @@ Recommended patterns:
 
 Example files (not a full production stack):
 
-| File | Role |
-|------|------|
-| [deploy/Dockerfile](../deploy/Dockerfile) | Multi-stage Voice image |
+| File                                                      | Role                                      |
+| --------------------------------------------------------- | ----------------------------------------- |
+| [deploy/Dockerfile](../deploy/Dockerfile)                 | Multi-stage Voice image                   |
 | [deploy/docker-compose.yml](../deploy/docker-compose.yml) | Voice service + commented Hermes sidecars |
-| [deploy/env.example](../deploy/env.example) | Env template |
+| [deploy/env.example](../deploy/env.example)               | Env template                              |
 
 ```bash
 # From repo root — create a real .env first (never commit it)

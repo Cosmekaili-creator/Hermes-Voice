@@ -16,10 +16,7 @@ import {
 export type VoiceDemoState = 'idle' | 'listening' | 'thinking' | 'speaking';
 export type TalkMode = 'ptt' | 'handsfree';
 
-type StatusOverride =
-	| null
-	| { kind: 'key'; key: MessageKey }
-	| { kind: 'raw'; text: string };
+type StatusOverride = null | { kind: 'key'; key: MessageKey } | { kind: 'raw'; text: string };
 
 const WAIT_KEYS = [
 	'status.hermesWorking',
@@ -155,9 +152,7 @@ export function createVoiceDemo() {
 			case 'idle':
 				return talkMode === 'handsfree' ? t('status.idleHandsfree') : t('status.idle');
 			case 'listening':
-				return talkMode === 'handsfree'
-					? t('status.listeningHandsfree')
-					: t('status.listening');
+				return talkMode === 'handsfree' ? t('status.listeningHandsfree') : t('status.listening');
 			case 'thinking':
 				return t('status.thinking');
 			case 'speaking':
@@ -212,10 +207,7 @@ export function createVoiceDemo() {
 	/** True when a realtime response may still be running (avoid spurious response.cancel). */
 	function responseMayBeActive(): boolean {
 		return (
-			state === 'speaking' ||
-			state === 'thinking' ||
-			hermesBridgeActive ||
-			suppressIdleForTool
+			state === 'speaking' || state === 'thinking' || hermesBridgeActive || suppressIdleForTool
 		);
 	}
 
@@ -506,7 +498,7 @@ export function createVoiceDemo() {
 	}
 
 	async function runHermesBridge(callId: string, request: string, myTurn: number) {
-		let output = 'Hermes unavailable: unknown error';
+		let output: string;
 		const ac = new AbortController();
 		hermesAbort = ac;
 
@@ -599,9 +591,7 @@ export function createVoiceDemo() {
 					if (destroyed || myTurn !== turnId) return;
 					client?.sendFunctionCallOutput(
 						callId,
-						quarantineHermesToolOutput(
-							`Hermes unavailable: unknown tool ${name || '(empty)'}`
-						)
+						quarantineHermesToolOutput(`Hermes unavailable: unknown tool ${name || '(empty)'}`)
 					);
 					await playback?.whenIdle();
 					if (destroyed || myTurn !== turnId) return;
@@ -615,10 +605,12 @@ export function createVoiceDemo() {
 			return;
 		}
 
-		let request = '';
+		let request: string;
 		try {
 			const args =
-				typeof event.arguments === 'string' ? (JSON.parse(event.arguments) as { request?: unknown }) : {};
+				typeof event.arguments === 'string'
+					? (JSON.parse(event.arguments) as { request?: unknown })
+					: {};
 			request = typeof args.request === 'string' ? args.request.trim() : '';
 		} catch {
 			request = '';
@@ -653,8 +645,7 @@ export function createVoiceDemo() {
 
 		switch (event.type) {
 			case 'error': {
-				const msg =
-					(typeof event.error?.message === 'string' && event.error.message) || '';
+				const msg = (typeof event.error?.message === 'string' && event.error.message) || '';
 				// Idle response.cancel (mode switch / disarm) — ignore, do not tear down UI.
 				if (msg && isBenignCancelError(msg)) return;
 				if (msg) failRaw(msg);

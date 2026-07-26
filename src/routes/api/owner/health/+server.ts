@@ -30,10 +30,7 @@ export const GET: RequestHandler = async (event) => {
 			? await probeOpenAI(readEnvTrimmed('OPENAI_API_KEY'))
 			: await probeXai(readEnvTrimmed('XAI_API_KEY'));
 	const voiceProvider = probeField(voiceProbe);
-	const providerFields =
-		provider === 'openai'
-			? { openai: voiceProvider }
-			: { xai: voiceProvider };
+	const providerFields = provider === 'openai' ? { openai: voiceProvider } : { xai: voiceProvider };
 
 	if (!isMultiUserMode()) {
 		const hermes = await probeHermes({

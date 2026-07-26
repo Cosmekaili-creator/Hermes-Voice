@@ -134,10 +134,7 @@ export function createRealtimeClient(
 
 			let sock: WebSocket;
 			try {
-				sock = new WebSocket(realtimeUrl(model), [
-					'realtime',
-					`openai-insecure-api-key.${token}`
-				]);
+				sock = new WebSocket(realtimeUrl(model), ['realtime', `openai-insecure-api-key.${token}`]);
 			} catch (err) {
 				reject(err instanceof Error ? err : new Error('websocketFailed'));
 				return;

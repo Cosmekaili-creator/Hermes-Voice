@@ -1,10 +1,6 @@
 import { browser } from '$app/environment';
 import { catalog } from './catalog';
-import {
-	LOCALE_STORAGE_KEY,
-	localeCookieValue,
-	localeFromAcceptLanguage
-} from './resolve';
+import { LOCALE_STORAGE_KEY, localeCookieValue, localeFromAcceptLanguage } from './resolve';
 import { isLocale, type Locale, type MessageKey } from './types';
 
 let locale = $state<Locale>('en');
@@ -45,9 +41,7 @@ export function resolveInitial(): Locale {
 
 	if (typeof navigator !== 'undefined') {
 		const header =
-			navigator.languages?.length > 0
-				? navigator.languages.join(',')
-				: navigator.language || null;
+			navigator.languages?.length > 0 ? navigator.languages.join(',') : navigator.language || null;
 		return localeFromAcceptLanguage(header) ?? 'en';
 	}
 

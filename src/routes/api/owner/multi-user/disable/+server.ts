@@ -6,10 +6,7 @@ import {
 	isMultiUserMode,
 	syncOwnerToEnv
 } from '$lib/server/bindings.server';
-import {
-	applyEnvUpdatesInProcess,
-	writeEnvFileAtomic
-} from '$lib/server/envFile.server';
+import { applyEnvUpdatesInProcess, writeEnvFileAtomic } from '$lib/server/envFile.server';
 import { assertSameOrigin } from '$lib/server/origin.server';
 import { enforceRateLimit, RATE } from '$lib/server/rateLimit.server';
 

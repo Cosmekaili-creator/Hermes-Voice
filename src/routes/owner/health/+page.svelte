@@ -107,14 +107,16 @@
 				{#if !multiUser}
 					<li>
 						<span>{t('health.voice', locale)}</span>
-						<strong class:ok={voice?.ok} class:fail={voice && !voice.ok}>{statusLabel(voice)}</strong>
+						<strong class:ok={voice?.ok} class:fail={voice && !voice.ok}
+							>{statusLabel(voice)}</strong
+						>
 					</li>
 				{/if}
 				<li>
-					<span>{provider === 'openai' ? t('health.openai', locale) : t('health.xai', locale)}</span>
-					<strong
-						class:ok={voiceProvider?.ok}
-						class:fail={voiceProvider && !voiceProvider.ok}>{statusLabel(voiceProvider)}</strong
+					<span>{provider === 'openai' ? t('health.openai', locale) : t('health.xai', locale)}</span
+					>
+					<strong class:ok={voiceProvider?.ok} class:fail={voiceProvider && !voiceProvider.ok}
+						>{statusLabel(voiceProvider)}</strong
 					>
 				</li>
 				{#if multiUser}
@@ -129,7 +131,9 @@
 				{:else}
 					<li>
 						<span>{t('health.hermes', locale)}</span>
-						<strong class:ok={hermes?.ok} class:fail={hermes && !hermes.ok}>{statusLabel(hermes)}</strong>
+						<strong class:ok={hermes?.ok} class:fail={hermes && !hermes.ok}
+							>{statusLabel(hermes)}</strong
+						>
 					</li>
 				{/if}
 				<li>

@@ -24,11 +24,11 @@ function isAllowedHermesHost(hostname) {
 	if (kind === 4) {
 		const n = ipv4ToInt(host);
 		if (n === null) return false;
-		if (((n & 0xff000000) >>> 0) === 0x0a000000) return true;
-		if (((n & 0xfff00000) >>> 0) === 0xac100000) return true;
-		if (((n & 0xffff0000) >>> 0) === 0xc0a80000) return true;
-		if (((n & 0xff000000) >>> 0) === 0x7f000000) return true;
-		if (((n & 0xffff0000) >>> 0) === 0xa9fe0000) return false;
+		if ((n & 0xff000000) >>> 0 === 0x0a000000) return true;
+		if ((n & 0xfff00000) >>> 0 === 0xac100000) return true;
+		if ((n & 0xffff0000) >>> 0 === 0xc0a80000) return true;
+		if ((n & 0xff000000) >>> 0 === 0x7f000000) return true;
+		if ((n & 0xffff0000) >>> 0 === 0xa9fe0000) return false;
 		return false;
 	}
 	if (kind === 6) {
@@ -57,7 +57,7 @@ assert.equal(isAllowedHermesHost('hermes.local'), true);
 	assert.ok(n !== null);
 	const broken = (n & 0xffff0000) === 0xc0a80000; // signed Int32
 	assert.equal(broken, false, 'signed compare must fail for 192.168 (documents the bug)');
-	const fixed = ((n & 0xffff0000) >>> 0) === 0xc0a80000;
+	const fixed = (n & 0xffff0000) >>> 0 === 0xc0a80000;
 	assert.equal(fixed, true);
 }
 

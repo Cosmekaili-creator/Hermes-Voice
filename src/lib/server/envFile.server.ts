@@ -28,8 +28,7 @@ export type ManagedEnvKey = (typeof MANAGED_ENV_KEYS)[number];
 export type EnvUpdates = Partial<Record<ManagedEnvKey, string | null>>;
 
 export type EnvWriteResult =
-	| { ok: true; path: string }
-	| { ok: false; code: 'env_write_failed'; message?: string };
+	{ ok: true; path: string } | { ok: false; code: 'env_write_failed'; message?: string };
 
 function formatEnvValue(value: string): string {
 	if (/[\s#"'$`\\]/.test(value) || value === '') {
@@ -89,7 +88,8 @@ export async function readEnvFileText(): Promise<string> {
 	try {
 		return await readFile(filePath, 'utf8');
 	} catch (err) {
-		const code = err && typeof err === 'object' && 'code' in err ? (err as { code?: string }).code : '';
+		const code =
+			err && typeof err === 'object' && 'code' in err ? (err as { code?: string }).code : '';
 		if (code === 'ENOENT') return '';
 		throw err;
 	}

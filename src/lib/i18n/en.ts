@@ -56,7 +56,8 @@ export const en = {
 	'wizard.opsLocked':
 		'Setup is incomplete and no SETUP_TOKEN is configured. Add SETUP_TOKEN to your .env, restart Hermes Voice, then open /setup?token=…',
 	'wizard.opsLockedTitle': 'Setup locked',
-	'wizard.completeLocked': 'Setup is complete. Open the Lounge with your URL key, or sign in to rotate settings.',
+	'wizard.completeLocked':
+		'Setup is complete. Open the Lounge with your URL key, or sign in to rotate settings.',
 	'wizard.completeLockedTitle': 'Setup complete',
 	'wizard.unlockTitle': 'Unlock setup',
 	'wizard.unlockHint': 'Enter the SETUP_TOKEN from your .env file.',
@@ -142,7 +143,8 @@ export const en = {
 		'Each Voice user binds to an isolated Hermes profile. N users ≈ N Hermes processes (ports, keys, HERMES_HOME).',
 	'users.needAuth': 'Owner sign-in required to manage users.',
 	'users.linkHealth': 'Health',
-	'users.singleMode': 'Multi-user is off. Enable to import the current .env owner binding and add more users.',
+	'users.singleMode':
+		'Multi-user is off. Enable to import the current .env owner binding and add more users.',
 	'users.enable': 'Enable multi-user',
 	'users.disableMode': 'Disable multi-user',
 	'users.disableConfirm': 'Disable multi-user and fall back to the owner .env binding?',
@@ -179,8 +181,10 @@ export const en = {
 	'users.error.missing_base': 'Hermes base URL is required',
 	'users.error.multi_user_disabled': 'Multi-user is not enabled',
 	'users.error.setup_incomplete': 'Finish setup before enabling multi-user',
-	'users.error.bindings_seed_incomplete': 'Set VOICE_URL_KEY and HERMES_API_KEY before enabling multi-user',
-	'users.error.bindings_write_failed': 'Could not write bindings file — check data/ permissions and ReadWritePaths',
+	'users.error.bindings_seed_incomplete':
+		'Set VOICE_URL_KEY and HERMES_API_KEY before enabling multi-user',
+	'users.error.bindings_write_failed':
+		'Could not write bindings file — check data/ permissions and ReadWritePaths',
 	'users.error.env_write_failed': 'Could not write .env — check permissions and ReadWritePaths',
 	'users.error.not_found': 'User not found',
 	'users.error.hermes_unreachable': 'Hermes unreachable',

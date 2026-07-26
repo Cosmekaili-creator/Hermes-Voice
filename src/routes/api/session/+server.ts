@@ -14,9 +14,7 @@ export const POST: RequestHandler = async (event) => {
 
 	const config = resolveSessionConfig();
 	const token =
-		config.provider === 'openai'
-			? await mintOpenAI({ model: config.model })
-			: await mintXai();
+		config.provider === 'openai' ? await mintOpenAI({ model: config.model }) : await mintXai();
 
 	return json({
 		value: token.value,

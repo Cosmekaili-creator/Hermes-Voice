@@ -82,10 +82,10 @@ HERMES_SESSION_KEY=agent:main:voice
 
 ### Voice providers
 
-| Provider | Env | Defaults |
-|----------|-----|----------|
-| **xAI** (default) | `XAI_API_KEY` | model `grok-voice-latest`, voice `eve` |
-| **OpenAI** | `VOICE_PROVIDER=openai` + `OPENAI_API_KEY` | model `gpt-realtime`, voice `alloy` |
+| Provider          | Env                                        | Defaults                               |
+| ----------------- | ------------------------------------------ | -------------------------------------- |
+| **xAI** (default) | `XAI_API_KEY`                              | model `grok-voice-latest`, voice `eve` |
+| **OpenAI**        | `VOICE_PROVIDER=openai` + `OPENAI_API_KEY` | model `gpt-realtime`, voice `alloy`    |
 
 Optional OpenAI overrides: `OPENAI_REALTIME_MODEL`, `OPENAI_VOICE` (resolved on the server; returned non-secret on `POST /api/session`). The setup wizard stays xAI-first — OpenAI is an ops env switch. Multi-user shares the active provider key for the whole process.
 
@@ -108,11 +108,11 @@ With `MULTI_USER=1`, each Voice user binds to an isolated Hermes profile (own AP
 
 ## Production
 
-| Path | Role |
-|------|------|
-| [deploy/](deploy/) | systemd unit, nginx example, env template |
+| Path                                                   | Role                                                         |
+| ------------------------------------------------------ | ------------------------------------------------------------ |
+| [deploy/](deploy/)                                     | systemd unit, nginx example, env template                    |
 | [deploy/docker-compose.yml](deploy/docker-compose.yml) | Optional Voice Compose image (`network_mode: host` on Linux) |
-| [docs/OPS.md](docs/OPS.md) | N-profile provisioning, Compose networking / SSRF allowlist |
+| [docs/OPS.md](docs/OPS.md)                             | N-profile provisioning, Compose networking / SSRF allowlist  |
 
 ```bash
 npm run build
@@ -138,12 +138,12 @@ Talk modes: **push-to-talk** commits audio from the client; **hands-free** uses 
 
 ## Docs
 
-| Doc | Contents |
-|-----|----------|
-| [CHANGELOG.md](CHANGELOG.md) | Release notes |
-| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Env vars, wizard, multi-user, providers |
-| [docs/OPS.md](docs/OPS.md) | N-profile ops, Compose, Hermes host allowlist |
-| [deploy/README.md](deploy/README.md) | systemd / nginx install recipe |
+| Doc                                            | Contents                                      |
+| ---------------------------------------------- | --------------------------------------------- |
+| [CHANGELOG.md](CHANGELOG.md)                   | Release notes                                 |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Env vars, wizard, multi-user, providers       |
+| [docs/OPS.md](docs/OPS.md)                     | N-profile ops, Compose, Hermes host allowlist |
+| [deploy/README.md](deploy/README.md)           | systemd / nginx install recipe                |
 
 ## Intentional limits
 

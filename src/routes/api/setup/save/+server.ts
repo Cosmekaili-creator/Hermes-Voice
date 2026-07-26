@@ -70,9 +70,7 @@ export const POST: RequestHandler = async (event) => {
 		hermesApiBase || (rotation ? existing('HERMES_API_BASE') : '') || 'http://127.0.0.1:8642';
 	const nextHermesKey = hermesApiKey || (rotation ? existing('HERMES_API_KEY') : '');
 	const nextSession =
-		hermesSessionKey ||
-		(rotation ? existing('HERMES_SESSION_KEY') : '') ||
-		'agent:main:voice';
+		hermesSessionKey || (rotation ? existing('HERMES_SESSION_KEY') : '') || 'agent:main:voice';
 	const nextOrigin = origin || (rotation ? existing('ORIGIN') : '') || '';
 
 	if (!nextVoice) {
