@@ -11,7 +11,12 @@ import type {
 	RealtimeServerEvent,
 	WireTurnDetection
 } from '$lib/providers/types';
-import { HANDS_FREE_TURN_DETECTION } from '$lib/providers/types';
+import {
+	HANDS_FREE_TURN_DETECTION,
+	handsFreeTurnDetectionFor,
+	OPENAI_HANDS_FREE_TURN_DETECTION,
+	XAI_HANDS_FREE_TURN_DETECTION
+} from '$lib/providers/types';
 import { createRealtimeClient as createXaiRealtimeClient } from '$lib/providers/xai/client';
 
 export type {
@@ -22,7 +27,12 @@ export type {
 	WireTurnDetection
 };
 export type { WireTurnDetection as TurnDetection };
-export { HANDS_FREE_TURN_DETECTION };
+export {
+	HANDS_FREE_TURN_DETECTION,
+	handsFreeTurnDetectionFor,
+	OPENAI_HANDS_FREE_TURN_DETECTION,
+	XAI_HANDS_FREE_TURN_DETECTION
+};
 
 /** Create a realtime client for the provider returned by `/api/session`. */
 export function createRealtimeClientFor(

@@ -28,8 +28,8 @@ export default defineConfig({
 						'self',
 						'https://api.x.ai',
 						'wss://api.x.ai',
-						'https://api.openai.com',
-						'wss://api.openai.com'
+						// OpenAI Realtime is WebRTC + HTTPS SDP (no browser WS).
+						'https://api.openai.com'
 					],
 					'object-src': ['none'],
 					'base-uri': ['self'],

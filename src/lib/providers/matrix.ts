@@ -29,6 +29,6 @@ export const CAPABILITY_MATRIX: Record<ProviderId, ProviderCapabilities> = {
 		defaultModel: OPENAI_DEFAULT_MODEL,
 		defaultVoice: OPENAI_DEFAULT_VOICE,
 		mintPath: 'ephemeral_client_secret',
-		transport: 'websocket_subprotocol'
+		transport: 'webrtc'
 	}
 };

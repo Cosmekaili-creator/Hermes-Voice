@@ -89,7 +89,7 @@ HERMES_SESSION_KEY=agent:main:voice
 
 Optional OpenAI overrides: `OPENAI_REALTIME_MODEL`, `OPENAI_VOICE` (resolved on the server; returned non-secret on `POST /api/session`). The setup wizard stays xAI-first — OpenAI is an ops env switch. Multi-user shares the active provider key for the whole process.
 
-Adapter seam: `src/lib/providers/` (capability matrix, mint, browser WebSocket clients).
+Adapter seam: `src/lib/providers/` (capability matrix, mint, xAI WebSocket + OpenAI WebRTC clients).
 
 ### Connect Hermes
 
@@ -125,7 +125,7 @@ Health check: `GET /health` → `{"ok":true,"service":"hermes-voice"}`.
 ## How it works
 
 ```text
-Browser ──mic/PCM──► Realtime provider (xAI or OpenAI)
+Browser ──mic──► Realtime provider (xAI WebSocket PCM, or OpenAI WebRTC)
    │                      │
    │         ask_hermes tool call
    ▼                      ▼

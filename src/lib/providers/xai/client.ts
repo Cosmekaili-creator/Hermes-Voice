@@ -180,6 +180,8 @@ export function createRealtimeClient(
 	}
 
 	return {
+		usesMediaTracks: false,
+		supportsBargeIn: false,
 		get ready() {
 			return ready;
 		},

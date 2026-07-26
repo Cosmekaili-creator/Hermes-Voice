@@ -73,13 +73,14 @@ systemd `ProtectSystem=strict` needs `ReadWritePaths=` on the `.env` parent for 
 
 `POST /api/session` returns `{ value, expires_at, provider, model, voice }` (ephemeral token + non-secret connect hints). Model/voice env overrides are never read in the browser.
 
-|               | xAI (default)                                                 | OpenAI                                                                                 |
-| ------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Model / voice | `grok-voice-latest` / `eve`                                   | `gpt-realtime` / `alloy` (overridable via `OPENAI_REALTIME_MODEL` / `OPENAI_VOICE`)    |
-| PCM           | 24 kHz                                                        | 24 kHz                                                                                 |
-| Mint          | `POST /api/session` → `api.x.ai` `client_secrets`             | `POST /api/session` → `api.openai.com` `client_secrets` (binds `session.type` + model) |
-| Transport     | Browser WebSocket `wss://api.x.ai` with `xai-client-secret.*` | Browser WebSocket `wss://api.openai.com` with `realtime` + `openai-insecure-api-key.*` |
-| Server VAD    | Yes (hands-free talk mode)                                    | Yes (`audio.input.turn_detection`)                                                     |
-| Tools         | Yes (`ask_hermes` via `session.update`)                       | Yes (same tool path)                                                                   |
+|                             | xAI (default)                                                 | OpenAI                                                                                                   |
+| --------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| Model / voice               | `grok-voice-latest` / `eve`                                   | `gpt-realtime` / `alloy` (overridable via `OPENAI_REALTIME_MODEL` / `OPENAI_VOICE`)                      |
+| PCM                         | 24 kHz (WebSocket audio)                                      | Media tracks (WebRTC); PCM rate unused for transport                                                     |
+| Mint                        | `POST /api/session` → `api.x.ai` `client_secrets`             | `POST /api/session` → `api.openai.com` `client_secrets` (binds `session.type` + model)                   |
+| Transport                   | Browser WebSocket `wss://api.x.ai` with `xai-client-secret.*` | Browser WebRTC: SDP `POST /v1/realtime/calls` with ephemeral Bearer; events on `oai-events` data channel |
+| Turn detection (hands-free) | `server_vad` + `silence_duration_ms: 1200`                    | `semantic_vad` (`eagerness: auto`, `create_response` + `interrupt_response`)                             |
+| Barge-in                    | Tap only (mic muted while speaking — echo)                    | Voice barge-in via WebRTC AEC + `interrupt_response`                                                     |
+| Tools                       | Hermes-only (`ask_hermes` via `session.update`)               | Hermes-only (same tool path)                                                                             |
 
 Capability matrix: `src/lib/providers/matrix.ts` (`CAPABILITY_MATRIX`). Thin probes: `POST /api/setup/test/xai` and `POST /api/setup/test/openai` (no OpenAI wizard step).

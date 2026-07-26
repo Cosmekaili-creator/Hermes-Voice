@@ -1,13 +1,14 @@
 import { pulse } from '$lib/haptics';
 import { getLocale, t, type MessageKey, type VoiceErrorCode } from '$lib/i18n';
+import { CAPABILITY_MATRIX } from '$lib/providers/matrix';
+import type { ProviderId } from '$lib/providers/types';
 import { createMicCapture, type CaptureHandle } from './audioCapture';
 import { createPlayback, type PlaybackHandle } from './audioPlayback';
 import { buildHermesVoiceInstructions } from './instructions';
-import type { ProviderId } from '$lib/providers/types';
 import { PROVIDER_PCM_RATE } from './pcm';
 import {
 	createRealtimeClientFor,
-	HANDS_FREE_TURN_DETECTION,
+	handsFreeTurnDetectionFor,
 	type RealtimeClient,
 	type RealtimeServerEvent,
 	type TurnDetection
@@ -29,6 +30,9 @@ const CONNECT_ERROR_CODES = {
 	websocketError: 'error.websocketError',
 	websocketClosed: 'error.websocketClosed',
 	websocketFailed: 'error.websocketFailed',
+	webrtcFailed: 'error.webrtcFailed',
+	webrtcClosed: 'error.webrtcClosed',
+	sdpExchangeFailed: 'error.sdpExchangeFailed',
 	realtimeSessionError: 'error.realtimeSessionError'
 } as const satisfies Record<string, VoiceErrorCode>;
 
@@ -185,8 +189,29 @@ export function createVoiceDemo() {
 			? crypto.randomUUID()
 			: `voice-${Date.now()}`;
 
+	function activeProvider(): ProviderId {
+		return token?.provider ?? 'xai';
+	}
+
 	function turnDetectionForMode(mode: TalkMode = talkMode): TurnDetection {
-		return mode === 'handsfree' ? HANDS_FREE_TURN_DETECTION : null;
+		return mode === 'handsfree' ? handsFreeTurnDetectionFor(activeProvider()) : null;
+	}
+
+	/** Mic send policy: listening always; OpenAI WebRTC also while speaking (barge-in + AEC). */
+	function allowMicSend(): boolean {
+		if (!client?.ready || hermesBridgeActive) return false;
+		if (state === 'listening') return true;
+		return (
+			!!client.supportsBargeIn && state === 'speaking' && talkMode === 'handsfree' && handsfreeArmed
+		);
+	}
+
+	function syncMicSend() {
+		if (!capture) return;
+		const enabled = allowMicSend();
+		for (const track of capture.stream.getAudioTracks()) {
+			track.enabled = enabled;
+		}
 	}
 
 	function clearThinkTimer() {
@@ -270,6 +295,7 @@ export function createVoiceDemo() {
 		if (hermesAbort) {
 			hermesAbort = null;
 		}
+		syncMicSend();
 	}
 
 	/**
@@ -425,12 +451,13 @@ export function createVoiceDemo() {
 	}
 
 	/**
-	 * Only stream mic while listening. Hands-free used to append during speaking for
-	 * server-VAD barge-in, but speaker→mic echo cancels long replies every few seconds.
-	 * Interrupt while she talks: tap the button (interruptSpeaking).
+	 * PCM append (xAI WebSocket only). OpenAI WebRTC uses the shared MediaStream track.
+	 * xAI: listening only — speaker→mic echo cancels long replies if we append while speaking.
+	 * OpenAI WebRTC: barge-in via track + semantic_vad interrupt_response (see allowMicSend).
 	 */
 	function allowAppend(): boolean {
-		return !!client?.ready && !hermesBridgeActive && state === 'listening';
+		if (client?.usesMediaTracks) return false;
+		return allowMicSend() && state === 'listening';
 	}
 
 	async function ensureCapture(ctx: AudioContext): Promise<CaptureHandle> {
@@ -562,6 +589,7 @@ export function createVoiceDemo() {
 		suppressIdleForTool = true;
 		busy = true;
 		state = 'thinking';
+		syncMicSend();
 		clearCancelArm();
 		startWaitRotation();
 		clearThinkTimer();
@@ -653,7 +681,18 @@ export function createVoiceDemo() {
 				return;
 			}
 			case 'input_audio_buffer.speech_started': {
-				// No voice barge-in while speaking (echo). Tap interrupts instead.
+				// OpenAI WebRTC: server interrupt_response cancels the model; we only stop local audio.
+				// xAI: no voice barge-in (echo) — tap interrupts instead.
+				if (!client?.supportsBargeIn || hermesBridgeActive) return;
+				if (state !== 'speaking') return;
+				playback?.interrupt();
+				playback?.setRemoteActive(false);
+				clearThinkTimer();
+				busy = false;
+				suppressIdleForTool = false;
+				state = 'listening';
+				statusOverride = null;
+				syncMicSend();
 				return;
 			}
 			case 'input_audio_buffer.speech_stopped': {
@@ -665,6 +704,7 @@ export function createVoiceDemo() {
 				const stoppedTurn = turnId;
 				busy = true;
 				state = 'thinking';
+				syncMicSend();
 				statusOverride = null;
 				pulse(8);
 				clearThinkTimer();
@@ -682,6 +722,20 @@ export function createVoiceDemo() {
 				handleFunctionCallDone(event, myTurn);
 				return;
 			}
+			case 'response.created': {
+				// WebRTC has no PCM deltas — enter speaking when the response starts.
+				if (!client?.usesMediaTracks) return;
+				if (state !== 'thinking' && state !== 'speaking') return;
+				clearThinkTimer();
+				busy = false;
+				endHermesBridgeUi();
+				suppressIdleForTool = false;
+				state = 'speaking';
+				statusOverride = null;
+				playback?.setRemoteActive(true);
+				syncMicSend();
+				return;
+			}
 			case 'response.output_audio.delta': {
 				if (typeof event.delta !== 'string' || !event.delta) return;
 				if (state !== 'thinking' && state !== 'speaking') return;
@@ -691,6 +745,7 @@ export function createVoiceDemo() {
 				suppressIdleForTool = false;
 				state = 'speaking';
 				statusOverride = null;
+				syncMicSend();
 				playback?.enqueueBase64Pcm16(event.delta);
 				return;
 			}
@@ -701,6 +756,7 @@ export function createVoiceDemo() {
 				void (async () => {
 					if (myTurn !== turnId) return;
 					clearThinkTimer();
+					playback?.setRemoteActive(false);
 					await playback?.whenIdle();
 					if (destroyed || myTurn !== turnId) return;
 					if (hermesBridgeActive || suppressIdleForTool) return;
@@ -729,8 +785,14 @@ export function createVoiceDemo() {
 			client?.close();
 			client = null;
 
-			token = await mintSession();
+			if (!tokenFresh()) {
+				token = await mintSession();
+			} else if (!token) {
+				token = await mintSession();
+			}
 			if (destroyed) throw new Error('destroyed');
+			if (!token) throw new VoiceAppError('error.sessionUnavailable', true);
+
 			const rt = createRealtimeClientFor(
 				token.provider,
 				{
@@ -753,6 +815,16 @@ export function createVoiceDemo() {
 						) {
 							fail('error.connectionLost', { reconnect: true });
 						}
+					},
+					onRemoteStream: (stream) => {
+						if (destroyed) return;
+						void ensureAudio()
+							.then(() => {
+								playback?.attachRemoteStream(stream);
+							})
+							.catch(() => {
+								/* ignore */
+							});
 					}
 				},
 				{
@@ -760,13 +832,19 @@ export function createVoiceDemo() {
 					voice: token.voice || undefined
 				}
 			);
+
 			try {
-				await rt.connect(
-					token.value,
-					buildHermesVoiceInstructions(getLocale()),
-					turnDetectionForMode()
-				);
+				const instructions = buildHermesVoiceInstructions(getLocale());
+				const vad = turnDetectionForMode();
+				if (rt.usesMediaTracks) {
+					const ctx = await ensureAudio();
+					const mic = await ensureCapture(ctx);
+					await rt.connect(token.value, instructions, vad, { localStream: mic.stream });
+				} else {
+					await rt.connect(token.value, instructions, vad);
+				}
 			} catch (err) {
+				rt.close();
 				connectFailure(err);
 			}
 			if (destroyed) {
@@ -774,6 +852,7 @@ export function createVoiceDemo() {
 				throw new Error('destroyed');
 			}
 			client = rt;
+			syncMicSend();
 			return rt;
 		})();
 
@@ -808,8 +887,15 @@ export function createVoiceDemo() {
 					}
 				}
 				if (destroyed || busy || state !== 'idle' || hermesBridgeActive) return;
-				if (!tokenFresh() || !client?.open || !client.ready) {
-					await ensureRealtime();
+				if (!tokenFresh()) {
+					token = await mintSession();
+				}
+				if (destroyed || busy || state !== 'idle' || hermesBridgeActive || !token) return;
+				// WebRTC needs a mic stream — mint-only warm. WS can pre-connect.
+				if (CAPABILITY_MATRIX[token.provider].transport === 'websocket_subprotocol') {
+					if (!client?.open || !client.ready) {
+						await ensureRealtime();
+					}
 				}
 			} catch {
 				/* silent — startListening surfaces errors */
@@ -822,7 +908,10 @@ export function createVoiceDemo() {
 			warmRecheckTimer = setInterval(() => {
 				if (destroyed) return;
 				if (busy || state !== 'idle' || hermesBridgeActive) return;
-				if (tokenFresh() && client?.open && client.ready) return;
+				if (tokenFresh() && token) {
+					if (CAPABILITY_MATRIX[token.provider].transport === 'webrtc') return;
+					if (client?.open && client.ready) return;
+				}
 				void warm();
 			}, WARM_RECHECK_MS);
 		}
@@ -854,6 +943,7 @@ export function createVoiceDemo() {
 			if (destroyed || myTurn !== turnId || !handsfreeArmed) return;
 			mic.start();
 			state = 'listening';
+			syncMicSend();
 			statusOverride = override;
 		} catch (err) {
 			if (destroyed || myTurn !== turnId) return;
@@ -915,6 +1005,7 @@ export function createVoiceDemo() {
 				handsfreeArmed = true;
 			}
 			state = 'listening';
+			syncMicSend();
 			statusOverride = null;
 			pulse(12);
 		} catch (err) {
@@ -951,9 +1042,11 @@ export function createVoiceDemo() {
 
 		turnId += 1;
 		const myTurn = turnId;
+		// PTT: disable the same send track WebRTC added (must-fix — no second getUserMedia).
 		capture?.stop();
 		busy = true;
 		state = 'thinking';
+		syncMicSend();
 		statusOverride = null;
 		pulse(8);
 

@@ -3,6 +3,10 @@ import { deltaBase64ToPlaybackFloat } from './pcm';
 export type PlaybackHandle = {
 	analyser: AnalyserNode;
 	enqueueBase64Pcm16(b64: string): void;
+	/** Attach OpenAI WebRTC remote audio (shared analyser for Lazic viz). */
+	attachRemoteStream(stream: MediaStream): void;
+	/** Mark remote media as active/idle for whenIdle (no PCM deltas on WebRTC). */
+	setRemoteActive(active: boolean): void;
 	interrupt(): void;
 	readonly playing: boolean;
 	whenIdle(): Promise<void>;
@@ -10,7 +14,8 @@ export type PlaybackHandle = {
 };
 
 /**
- * Queue/schedule base64 PCM16 (24 kHz) deltas into AudioContext with a write-cursor.
+ * Queue/schedule base64 PCM16 (24 kHz) deltas into AudioContext with a write-cursor,
+ * plus optional WebRTC remote MediaStream sink for OpenAI.
  * Analyser sits in the audible path for Lazic while speaking.
  */
 export function createPlayback(ctx: AudioContext): PlaybackHandle {
@@ -27,11 +32,34 @@ export function createPlayback(ctx: AudioContext): PlaybackHandle {
 	let idleWaiters: Array<() => void> = [];
 	let destroyed = false;
 
+	let remoteSource: MediaStreamAudioSourceNode | null = null;
+	let remoteGain: GainNode | null = null;
+	let remoteActive = false;
+
 	function notifyIdleIfNeeded() {
-		if (activeSources > 0) return;
+		if (activeSources > 0 || remoteActive) return;
 		const waiters = idleWaiters;
 		idleWaiters = [];
 		for (const w of waiters) w();
+	}
+
+	function detachRemote() {
+		if (remoteSource) {
+			try {
+				remoteSource.disconnect();
+			} catch {
+				/* ignore */
+			}
+			remoteSource = null;
+		}
+		if (remoteGain) {
+			try {
+				remoteGain.disconnect();
+			} catch {
+				/* ignore */
+			}
+			remoteGain = null;
+		}
 	}
 
 	function enqueueBase64Pcm16(b64: string) {
@@ -68,6 +96,28 @@ export function createPlayback(ctx: AudioContext): PlaybackHandle {
 		source.start(startAt);
 	}
 
+	function attachRemoteStream(stream: MediaStream) {
+		if (destroyed) return;
+		detachRemote();
+		try {
+			remoteGain = ctx.createGain();
+			remoteGain.gain.value = 1;
+			remoteSource = ctx.createMediaStreamSource(stream);
+			remoteSource.connect(remoteGain);
+			remoteGain.connect(analyser);
+		} catch {
+			detachRemote();
+		}
+	}
+
+	function setRemoteActive(active: boolean) {
+		remoteActive = active;
+		if (remoteGain) {
+			remoteGain.gain.value = active ? 1 : 0;
+		}
+		if (!active) notifyIdleIfNeeded();
+	}
+
 	function interrupt() {
 		for (const source of sources) {
 			try {
@@ -81,18 +131,24 @@ export function createPlayback(ctx: AudioContext): PlaybackHandle {
 		sources.clear();
 		activeSources = 0;
 		nextStartTime = 0;
+		if (remoteGain) {
+			remoteGain.gain.value = 0;
+		}
+		remoteActive = false;
 		notifyIdleIfNeeded();
 	}
 
 	return {
 		analyser,
 		enqueueBase64Pcm16,
+		attachRemoteStream,
+		setRemoteActive,
 		interrupt,
 		get playing() {
-			return activeSources > 0;
+			return activeSources > 0 || remoteActive;
 		},
 		whenIdle() {
-			if (activeSources === 0) return Promise.resolve();
+			if (activeSources === 0 && !remoteActive) return Promise.resolve();
 			return new Promise<void>((resolve) => {
 				idleWaiters.push(resolve);
 			});
@@ -100,6 +156,7 @@ export function createPlayback(ctx: AudioContext): PlaybackHandle {
 		destroy() {
 			destroyed = true;
 			interrupt();
+			detachRemote();
 			try {
 				analyser.disconnect();
 			} catch {

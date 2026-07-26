@@ -5,7 +5,7 @@ export {
 	DEFAULT_MODEL,
 	DEFAULT_TTL_SECONDS,
 	DEFAULT_VOICE,
-	realtimeUrl
+	REALTIME_CALLS_URL
 } from './constants';
 export {
 	createRealtimeClient,

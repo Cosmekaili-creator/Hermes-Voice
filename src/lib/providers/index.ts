@@ -15,6 +15,11 @@ export type {
 	VoiceInfo,
 	WireTurnDetection
 } from './types';
-export { HANDS_FREE_TURN_DETECTION } from './types';
+export {
+	HANDS_FREE_TURN_DETECTION,
+	handsFreeTurnDetectionFor,
+	OPENAI_HANDS_FREE_TURN_DETECTION,
+	XAI_HANDS_FREE_TURN_DETECTION
+} from './types';
 export { CAPABILITY_MATRIX } from './matrix';
 export { PCM_RATE } from './pcm';
