@@ -4,6 +4,7 @@
  */
 export {
 	createVoiceDemo,
+	type CaptionPhase,
 	type VoiceDemo,
 	type VoiceDemoState,
 	type TalkMode

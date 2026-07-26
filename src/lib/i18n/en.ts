@@ -14,6 +14,7 @@ export const en = {
 	'status.hermesWorking': 'Hermes is working…',
 	'status.hermesStill': 'Still on it…',
 	'status.hermesAlmost': 'Almost there…',
+	'status.captions': 'Live captions',
 	'status.speaking': 'Hermes speaking…',
 	'status.connecting': 'Connecting…',
 	'status.cancelArm': 'Tap again to cancel',

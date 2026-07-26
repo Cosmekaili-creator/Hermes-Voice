@@ -9,7 +9,8 @@ export const ASK_HERMES_TOOL = {
 		properties: {
 			request: {
 				type: 'string',
-				description: 'Clear natural-language request for Hermes (include useful context).'
+				description:
+					'Complete natural-language brief for Hermes. Include every proper noun, place, date/time, and the intended action (e.g. search + add to calendar). Do not omit venue names or cities.'
 			}
 		},
 		required: ['request']

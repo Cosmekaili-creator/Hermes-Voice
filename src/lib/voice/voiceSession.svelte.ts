@@ -4,6 +4,15 @@ import { CAPABILITY_MATRIX } from '$lib/providers/matrix';
 import type { ProviderId } from '$lib/providers/types';
 import { createMicCapture, type CaptureHandle } from './audioCapture';
 import { createPlayback, type PlaybackHandle } from './audioPlayback';
+import { createSseParseState, pushSseChunk } from '$lib/sseParse';
+	import { createCaptionDebugger } from './captionDebug';
+	import {
+		advanceCaptionBreaks,
+		linesFromBreaks,
+		windowCaptionLines,
+		type CaptionLineView
+	} from './captionLines';
+	import { formatHermesToolActivity } from './captionTruncate';
 import { buildHermesVoiceInstructions } from './instructions';
 import { PROVIDER_PCM_RATE } from './pcm';
 import {
@@ -13,6 +22,8 @@ import {
 	type RealtimeServerEvent,
 	type TurnDetection
 } from './realtimeClient';
+
+export type CaptionPhase = 'hidden' | 'live' | 'fading';
 
 export type VoiceDemoState = 'idle' | 'listening' | 'thinking' | 'speaking';
 export type TalkMode = 'ptt' | 'handsfree';
@@ -146,6 +157,28 @@ export function createVoiceDemo() {
 	let suppressIdleForTool = false;
 	let micAnalyser = $state<AnalyserNode | null>(null);
 	let playAnalyser = $state<AnalyserNode | null>(null);
+	/** Live Hermes tool activity (from SSE tool progress) during bridge wait. */
+	let hermesWaitActivity = $state<string | null>(null);
+	/** Live assistant captions (session-only) — paced to speech, stable lines. */
+	let captionLines = $state<CaptionLineView[]>([]);
+	let captionPhase = $state<CaptionPhase>('hidden');
+	let captionFadeTimer: ReturnType<typeof setTimeout> | null = null;
+	let captionRevealTimer: ReturnType<typeof setInterval> | null = null;
+	/** Full transcript for the current response (may arrive ahead of audio). */
+	let captionBuffer = '';
+	/** How much of captionBuffer is shown (grows with audio playhead). */
+	let captionRevealLen = 0;
+	/** Exclusive indices where wrapped lines were committed (never reflow). */
+	let captionBreaks: number[] = [];
+
+	/** Fallback pace only for WebRTC (no PCM queue clock). */
+	const CAPTION_CHARS_PER_SEC = 16;
+	const CAPTION_TICK_MS = 50;
+	/** Keep final lines readable after audio ends, then fade. */
+	const CAPTION_HOLD_MS = 3500;
+	const CAPTION_FADE_MS = 1400;
+	const captionDbg = createCaptionDebugger();
+	let captionRevealTicks = 0;
 
 	const statusLabel = $derived.by(() => {
 		if (statusOverride?.kind === 'raw') return statusOverride.text;
@@ -263,9 +296,163 @@ export function createVoiceDemo() {
 		}
 	}
 
+	function clearCaptionFadeTimer() {
+		if (captionFadeTimer !== null) {
+			clearTimeout(captionFadeTimer);
+			captionFadeTimer = null;
+		}
+	}
+
+	function stopCaptionReveal() {
+		if (captionRevealTimer !== null) {
+			clearInterval(captionRevealTimer);
+			captionRevealTimer = null;
+		}
+	}
+
+	function captionSnap(extra: Record<string, unknown> = {}) {
+		return {
+			phase: captionPhase,
+			buf: captionBuffer.length,
+			reveal: captionRevealLen,
+			lines: captionLines.length,
+			soft: captionLines.some((l) => l.soft),
+			ahead: captionBuffer.length - captionRevealLen,
+			state,
+			play: !!playback?.playing,
+			bufAudio: playback?.bufferedAheadSec ?? null,
+			speakProg: playback?.speakProgress ?? null,
+			media: !!client?.usesMediaTracks,
+			...extra
+		};
+	}
+
+	function syncCaptionDisplay() {
+		const visible = captionBuffer.slice(0, captionRevealLen);
+		captionBreaks = advanceCaptionBreaks(visible, captionBreaks);
+		captionLines = windowCaptionLines(linesFromBreaks(visible, captionBreaks));
+		if (captionLines.length > 0) {
+			captionPhase = captionPhase === 'fading' ? 'fading' : 'live';
+		}
+	}
+
+	/** Map caption reveal to PCM playhead (xAI). Avoids fixed chars/sec drift. */
+	function revealFromAudioClock() {
+		const prog = playback?.speakProgress ?? 0;
+		const target = Math.floor(captionBuffer.length * Math.min(1, Math.max(0, prog)));
+		if (target > captionRevealLen) {
+			captionRevealLen = target;
+			syncCaptionDisplay();
+		}
+	}
+
+	function ensureCaptionReveal() {
+		if (captionRevealTimer !== null || destroyed) return;
+		captionDbg.log('reveal_start', captionSnap());
+		captionRevealTimer = setInterval(() => {
+			if (destroyed || captionPhase === 'fading') return;
+			if (captionBuffer.length === 0) return;
+
+			if (client?.usesMediaTracks) {
+				// WebRTC: audio is live — reveal at speech-like pace, never jump-flush.
+				if (captionRevealLen >= captionBuffer.length) return;
+				const step = Math.max(1, Math.round((CAPTION_CHARS_PER_SEC * CAPTION_TICK_MS) / 1000));
+				captionRevealLen = Math.min(captionBuffer.length, captionRevealLen + step);
+				syncCaptionDisplay();
+			} else {
+				revealFromAudioClock();
+			}
+
+			captionRevealTicks += 1;
+			if (captionRevealTicks % 8 === 0) {
+				captionDbg.log('reveal_tick', captionSnap());
+			}
+		}, CAPTION_TICK_MS);
+	}
+
+	function clearCaptions() {
+		captionDbg.log('clear', captionSnap());
+		clearCaptionFadeTimer();
+		stopCaptionReveal();
+		captionBuffer = '';
+		captionRevealLen = 0;
+		captionRevealTicks = 0;
+		captionBreaks = [];
+		captionLines = [];
+		captionPhase = 'hidden';
+	}
+
+	function appendCaptionDelta(delta: string) {
+		if (!delta) return;
+		clearCaptionFadeTimer();
+		if (captionPhase === 'fading' || captionPhase === 'hidden') {
+			// New deltas after fade/hidden — keep buffer continuity only while live.
+			if (captionPhase === 'fading') {
+				captionBuffer = '';
+				captionRevealLen = 0;
+				captionBreaks = [];
+				captionLines = [];
+			}
+		}
+		captionBuffer += delta;
+		captionPhase = 'live';
+		captionDbg.log('delta', captionSnap({ deltaLen: delta.length, preview: delta.slice(0, 48) }));
+		ensureCaptionReveal();
+	}
+
+	function startCaptionTurn() {
+		captionDbg.log('turn_start', captionSnap());
+		clearCaptionFadeTimer();
+		stopCaptionReveal();
+		captionBuffer = '';
+		captionRevealLen = 0;
+		captionRevealTicks = 0;
+		captionBreaks = [];
+		captionLines = [];
+		captionPhase = 'hidden';
+	}
+
+	/** After audio ends: show any remaining text, hold, then fade. */
+	function beginCaptionFade() {
+		captionDbg.log('hold_begin', captionSnap());
+		stopCaptionReveal();
+		// Finish the line so the last words aren't lost when the channel closes.
+		if (captionBuffer.length > 0 && captionRevealLen < captionBuffer.length) {
+			captionRevealLen = captionBuffer.length;
+			syncCaptionDisplay();
+		}
+		if (captionLines.length === 0) {
+			captionBuffer = '';
+			captionRevealLen = 0;
+			captionBreaks = [];
+			captionPhase = 'hidden';
+			return;
+		}
+		captionPhase = 'live';
+		clearCaptionFadeTimer();
+		captionFadeTimer = setTimeout(() => {
+			captionFadeTimer = null;
+			if (destroyed) return;
+			captionDbg.log('fade_begin', captionSnap());
+			captionPhase = 'fading';
+			captionFadeTimer = setTimeout(() => {
+				captionFadeTimer = null;
+				if (destroyed) return;
+				captionDbg.log('fade_done', captionSnap());
+				captionBuffer = '';
+				captionRevealLen = 0;
+				captionBreaks = [];
+				captionLines = [];
+				captionPhase = 'hidden';
+				void captionDbg.flush();
+			}, CAPTION_FADE_MS);
+		}, CAPTION_HOLD_MS);
+	}
+
 	function updateWaitStatus() {
 		if (!hermesBridgeActive || destroyed || cancelArmed) return;
 		waitElapsedSec = Math.max(0, Math.floor((Date.now() - hermesStartedAt) / 1000));
+		// Phrase only — tool activity is a separate Lounge line under status.
 		statusOverride = { kind: 'key', key: WAIT_KEYS[waitPhraseIndex % WAIT_KEYS.length] };
 	}
 
@@ -283,13 +470,14 @@ export function createVoiceDemo() {
 				waitPhraseIndex += 1;
 			}
 			if (!cancelArmed) {
-				statusOverride = { kind: 'key', key: WAIT_KEYS[waitPhraseIndex % WAIT_KEYS.length] };
+				updateWaitStatus();
 			}
 		}, WAIT_TICK_MS);
 	}
 
 	function endHermesBridgeUi() {
 		hermesBridgeActive = false;
+		hermesWaitActivity = null;
 		clearCancelArm();
 		clearWaitRotation();
 		if (hermesAbort) {
@@ -306,6 +494,7 @@ export function createVoiceDemo() {
 		clearThinkTimer();
 		clearCancelArm();
 		clearWaitRotation();
+		hermesWaitActivity = null;
 		if (hermesAbort) {
 			try {
 				hermesAbort.abort();
@@ -332,6 +521,7 @@ export function createVoiceDemo() {
 
 	function fail(code: VoiceErrorCode, opts?: { reconnect?: boolean }) {
 		playback?.interrupt();
+		clearCaptions();
 		try {
 			client?.clearInputBuffer();
 		} catch {
@@ -359,6 +549,7 @@ export function createVoiceDemo() {
 
 	function failRaw(vendorMessage: string, opts?: { reconnect?: boolean }) {
 		playback?.interrupt();
+		clearCaptions();
 		try {
 			client?.clearInputBuffer();
 		} catch {
@@ -396,6 +587,7 @@ export function createVoiceDemo() {
 		clearThinkTimer();
 		clearCancelArm();
 		clearWaitRotation();
+		hermesWaitActivity = null;
 		suppressIdleForTool = false;
 		hermesBridgeActive = false;
 		busy = false;
@@ -406,6 +598,7 @@ export function createVoiceDemo() {
 			/* ignore */
 		}
 		playback?.interrupt();
+		clearCaptions();
 		// Cancel ≠ disarm: if still armed, rearm continuous listen.
 		if (handsfreeArmed && talkMode === 'handsfree') {
 			void rearmListening({ kind: 'key', key: 'status.cancelled' });
@@ -535,7 +728,10 @@ export function createVoiceDemo() {
 
 			const res = await fetch('/api/hermes', {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
+				headers: {
+					'Content-Type': 'application/json',
+					Accept: 'text/event-stream'
+				},
 				credentials: 'same-origin',
 				signal: ac.signal,
 				body: JSON.stringify({
@@ -549,10 +745,76 @@ export function createVoiceDemo() {
 					res.status === 504
 						? 'Hermes unavailable: timeout'
 						: `Hermes unavailable: HTTP ${res.status}`;
+			} else if (!res.body) {
+				output = 'Hermes unavailable: empty stream';
 			} else {
-				const body = (await res.json()) as { text?: string };
-				const text = typeof body.text === 'string' ? body.text.trim() : '';
-				output = text || 'Hermes returned an empty reply.';
+				const reader = res.body.getReader();
+				const decoder = new TextDecoder();
+				const sse = createSseParseState();
+				let doneText: string | null = null;
+				let streamError: string | null = null;
+
+				while (true) {
+					const { done, value } = await reader.read();
+					if (done) break;
+					const chunk = decoder.decode(value, { stream: true });
+					for (const frame of pushSseChunk(sse, chunk)) {
+						if (frame.event === 'tool') {
+							try {
+								const payload = JSON.parse(frame.data) as {
+									tool?: string;
+									label?: string;
+								};
+								const tool = typeof payload.tool === 'string' ? payload.tool : '';
+								if (!tool) continue;
+								hermesWaitActivity = formatHermesToolActivity(
+									tool,
+									typeof payload.label === 'string' ? payload.label : undefined
+								);
+								updateWaitStatus();
+							} catch {
+								/* ignore malformed tool frames */
+							}
+							continue;
+						}
+						if (frame.event === 'done') {
+							try {
+								const payload = JSON.parse(frame.data) as { text?: string };
+								doneText = typeof payload.text === 'string' ? payload.text.trim() : '';
+							} catch {
+								doneText = '';
+							}
+							continue;
+						}
+						if (frame.event === 'error') {
+							try {
+								const payload = JSON.parse(frame.data) as {
+									message?: string;
+									status?: number;
+								};
+								if (payload.status === 499) {
+									streamError = 'cancelled';
+								} else if (payload.status === 504) {
+									streamError = 'Hermes unavailable: timeout';
+								} else {
+									streamError =
+										typeof payload.message === 'string' && payload.message
+											? `Hermes unavailable: ${payload.message}`
+											: 'Hermes unavailable: request failed';
+								}
+							} catch {
+								streamError = 'Hermes unavailable: request failed';
+							}
+						}
+					}
+				}
+
+				if (streamError === 'cancelled') return;
+				if (streamError) {
+					output = streamError;
+				} else {
+					output = doneText || 'Hermes returned an empty reply.';
+				}
 			}
 		} catch (err) {
 			if (ac.signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
@@ -585,6 +847,8 @@ export function createVoiceDemo() {
 	}
 
 	function beginHermesWorkingUi(myTurn: number) {
+		clearCaptions();
+		hermesWaitActivity = null;
 		hermesBridgeActive = true;
 		suppressIdleForTool = true;
 		busy = true;
@@ -604,6 +868,19 @@ export function createVoiceDemo() {
 	function handleFunctionCallDone(event: RealtimeServerEvent, myTurn: number) {
 		const name = typeof event.name === 'string' ? event.name : '';
 		const callId = typeof event.call_id === 'string' ? event.call_id : '';
+
+		let request = '';
+		if (name === 'ask_hermes') {
+			try {
+				const args =
+					typeof event.arguments === 'string'
+						? (JSON.parse(event.arguments) as { request?: unknown })
+						: {};
+				request = typeof args.request === 'string' ? args.request.trim() : '';
+			} catch {
+				request = '';
+			}
+		}
 
 		beginHermesWorkingUi(myTurn);
 
@@ -631,17 +908,6 @@ export function createVoiceDemo() {
 				}
 			})();
 			return;
-		}
-
-		let request: string;
-		try {
-			const args =
-				typeof event.arguments === 'string'
-					? (JSON.parse(event.arguments) as { request?: unknown })
-					: {};
-			request = typeof args.request === 'string' ? args.request.trim() : '';
-		} catch {
-			request = '';
 		}
 
 		if (!request) {
@@ -687,6 +953,7 @@ export function createVoiceDemo() {
 				if (state !== 'speaking') return;
 				playback?.interrupt();
 				playback?.setRemoteActive(false);
+				clearCaptions();
 				clearThinkTimer();
 				busy = false;
 				suppressIdleForTool = false;
@@ -723,6 +990,9 @@ export function createVoiceDemo() {
 				return;
 			}
 			case 'response.created': {
+				// Fresh caption turn for each assistant response (incl. post-Hermes).
+				startCaptionTurn();
+				captionDbg.log('response_created', captionSnap());
 				// WebRTC has no PCM deltas — enter speaking when the response starts.
 				if (!client?.usesMediaTracks) return;
 				if (state !== 'thinking' && state !== 'speaking') return;
@@ -734,11 +1004,18 @@ export function createVoiceDemo() {
 				statusOverride = null;
 				playback?.setRemoteActive(true);
 				syncMicSend();
+				captionDbg.log('speaking_webrtc', captionSnap());
+				return;
+			}
+			case 'response.output_audio_transcript.delta': {
+				if (typeof event.delta !== 'string' || !event.delta) return;
+				appendCaptionDelta(event.delta);
 				return;
 			}
 			case 'response.output_audio.delta': {
 				if (typeof event.delta !== 'string' || !event.delta) return;
 				if (state !== 'thinking' && state !== 'speaking') return;
+				const enteredSpeaking = state !== 'speaking';
 				clearThinkTimer();
 				busy = false;
 				endHermesBridgeUi();
@@ -747,19 +1024,28 @@ export function createVoiceDemo() {
 				statusOverride = null;
 				syncMicSend();
 				playback?.enqueueBase64Pcm16(event.delta);
+				if (enteredSpeaking) {
+					captionDbg.log('speaking_pcm', captionSnap({ audioDelta: event.delta.length }));
+				}
 				return;
 			}
 			case 'response.done': {
-				if (hermesBridgeActive || suppressIdleForTool) {
-					return;
-				}
+				// Always fade captions when this response ends (even if bridge suppressed idle).
+				const shouldSettleUi = !hermesBridgeActive && !suppressIdleForTool;
+				captionDbg.log('response_done', captionSnap({ shouldSettleUi }));
 				void (async () => {
 					if (myTurn !== turnId) return;
-					clearThinkTimer();
-					playback?.setRemoteActive(false);
-					await playback?.whenIdle();
-					if (destroyed || myTurn !== turnId) return;
-					if (hermesBridgeActive || suppressIdleForTool) return;
+					if (shouldSettleUi) {
+						clearThinkTimer();
+						playback?.setRemoteActive(false);
+						captionDbg.log('wait_idle_start', captionSnap());
+						await playback?.whenIdle();
+						captionDbg.log('wait_idle_done', captionSnap());
+						if (destroyed || myTurn !== turnId) return;
+						if (hermesBridgeActive || suppressIdleForTool) return;
+					}
+					beginCaptionFade();
+					if (!shouldSettleUi) return;
 					if (state === 'speaking' || state === 'thinking') {
 						if (handsfreeArmed && talkMode === 'handsfree') {
 							await rearmListening();
@@ -767,6 +1053,7 @@ export function createVoiceDemo() {
 							setIdle();
 						}
 					}
+					void captionDbg.flush();
 				})();
 				return;
 			}
@@ -1080,6 +1367,7 @@ export function createVoiceDemo() {
 			/* ignore */
 		}
 		playback?.interrupt();
+		clearCaptions();
 		capture?.stop();
 		setIdle();
 	}
@@ -1102,6 +1390,7 @@ export function createVoiceDemo() {
 			/* ignore */
 		}
 		playback?.interrupt();
+		clearCaptions();
 		capture?.stop();
 		setIdle();
 	}
@@ -1160,6 +1449,7 @@ export function createVoiceDemo() {
 			/* ignore */
 		}
 		playback?.interrupt();
+		clearCaptions();
 		capture?.stop();
 		state = 'idle';
 		statusOverride = null;
@@ -1186,6 +1476,9 @@ export function createVoiceDemo() {
 		clearCancelArm();
 		clearWaitRotation();
 		clearWarmRecheck();
+		clearCaptions();
+		captionDbg.destroy();
+		hermesWaitActivity = null;
 		try {
 			hermesAbort?.abort();
 		} catch {
@@ -1243,6 +1536,15 @@ export function createVoiceDemo() {
 		},
 		get waitElapsedSec() {
 			return waitElapsedSec;
+		},
+		get hermesWaitActivity() {
+			return hermesWaitActivity;
+		},
+		get captionLines() {
+			return captionLines;
+		},
+		get captionPhase() {
+			return captionPhase;
 		},
 		get micAnalyser() {
 			return micAnalyser;

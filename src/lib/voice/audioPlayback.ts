@@ -9,6 +9,13 @@ export type PlaybackHandle = {
 	setRemoteActive(active: boolean): void;
 	interrupt(): void;
 	readonly playing: boolean;
+	/** Seconds of PCM still queued ahead of the AudioContext playhead (0 for WebRTC). */
+	readonly bufferedAheadSec: number;
+	/**
+	 * 0..1 progress through the current PCM utterance (playhead vs queue end).
+	 * 0 when idle / WebRTC remote-only.
+	 */
+	readonly speakProgress: number;
 	whenIdle(): Promise<void>;
 	destroy(): void;
 };
@@ -27,6 +34,8 @@ export function createPlayback(ctx: AudioContext): PlaybackHandle {
 	analyser.connect(ctx.destination);
 
 	let nextStartTime = 0;
+	/** AudioContext time when the current PCM utterance's first chunk was scheduled. */
+	let utteranceOrigin = 0;
 	let activeSources = 0;
 	const sources = new Set<AudioBufferSourceNode>();
 	let idleWaiters: Array<() => void> = [];
@@ -38,6 +47,8 @@ export function createPlayback(ctx: AudioContext): PlaybackHandle {
 
 	function notifyIdleIfNeeded() {
 		if (activeSources > 0 || remoteActive) return;
+		utteranceOrigin = 0;
+		nextStartTime = 0;
 		const waiters = idleWaiters;
 		idleWaiters = [];
 		for (const w of waiters) w();
@@ -78,6 +89,10 @@ export function createPlayback(ctx: AudioContext): PlaybackHandle {
 		source.connect(analyser);
 
 		const startAt = Math.max(ctx.currentTime + 0.02, nextStartTime);
+		// Keep origin across back-to-back chunks so speakProgress stays continuous.
+		if (utteranceOrigin <= 0) {
+			utteranceOrigin = startAt;
+		}
 		nextStartTime = startAt + buffer.duration;
 		activeSources += 1;
 		sources.add(source);
@@ -131,6 +146,7 @@ export function createPlayback(ctx: AudioContext): PlaybackHandle {
 		sources.clear();
 		activeSources = 0;
 		nextStartTime = 0;
+		utteranceOrigin = 0;
 		if (remoteGain) {
 			remoteGain.gain.value = 0;
 		}
@@ -146,6 +162,20 @@ export function createPlayback(ctx: AudioContext): PlaybackHandle {
 		interrupt,
 		get playing() {
 			return activeSources > 0 || remoteActive;
+		},
+		get bufferedAheadSec() {
+			if (remoteActive) return 0;
+			const ahead = nextStartTime - ctx.currentTime;
+			return ahead > 0 ? ahead : 0;
+		},
+		get speakProgress() {
+			if (remoteActive || utteranceOrigin <= 0) return 0;
+			const end = nextStartTime;
+			if (end <= utteranceOrigin) return 0;
+			const p = (ctx.currentTime - utteranceOrigin) / (end - utteranceOrigin);
+			if (p <= 0) return 0;
+			if (p >= 1) return 1;
+			return p;
 		},
 		whenIdle() {
 			if (activeSources === 0 && !remoteActive) return Promise.resolve();

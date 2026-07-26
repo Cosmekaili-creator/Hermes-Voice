@@ -16,6 +16,7 @@ export const fr = {
 	'status.hermesWorking': 'Hermes travaille…',
 	'status.hermesStill': 'Toujours en cours…',
 	'status.hermesAlmost': 'Presque terminé…',
+	'status.captions': 'Sous-titres en direct',
 	'status.speaking': 'Hermes parle…',
 	'status.connecting': 'Connexion…',
 	'status.cancelArm': 'Appuyez encore pour annuler',

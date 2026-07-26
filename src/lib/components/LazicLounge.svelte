@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { fly } from 'svelte/transition';
 	import { getLocale, t } from '$lib/i18n';
 	import { createVoiceDemo } from '$lib/voice/voiceDemo';
 	import { drawLazicLounge, type VizQuality } from '$lib/viz/lazicLounge';
@@ -186,9 +187,32 @@
 		<LocaleSwitch />
 	</div>
 
+	{#if demo.captionLines.length > 0 || demo.captionPhase !== 'hidden'}
+		<div
+			class="captions"
+			class:captions--fade={demo.captionPhase === 'fading'}
+			aria-live="off"
+			aria-label={t('status.captions')}
+		>
+			{#each demo.captionLines as line (line.id)}
+				<p
+					class="captions__line"
+					class:captions__line--soft={line.soft}
+					in:fly={{ y: 6, duration: 220 }}
+					out:fly={{ y: -10, duration: 280 }}
+				>
+					{line.text}
+				</p>
+			{/each}
+		</div>
+	{/if}
+
 	<div class="center">
 		<p class="brand">HERMES</p>
 		<p class="status" aria-live="polite">{demo.statusLabel}</p>
+		{#if demo.hermesWaitActivity}
+			<p class="status-activity" aria-live="off">{demo.hermesWaitActivity}</p>
+		{/if}
 		{#if demo.waitElapsedSec !== null}
 			<p class="status-timer" aria-live="off">{demo.waitElapsedSec}s</p>
 		{/if}
@@ -318,6 +342,59 @@
 		justify-content: flex-end;
 	}
 
+	/* Above the Lazic ring — stable left-growing lines (center alignment shifts glyphs). */
+	.captions {
+		position: absolute;
+		z-index: 3;
+		left: 50%;
+		top: max(8.75rem, calc(env(safe-area-inset-top) + 7rem));
+		translate: -50% 0;
+		margin: 0;
+		width: min(28rem, calc(100vw - 2.5rem));
+		display: flex;
+		flex-direction: column;
+		align-items: stretch;
+		gap: 0.1rem;
+		/* Two live lines + one soft predecessor. */
+		min-height: 0;
+		max-height: calc(1.35em * 3 + 0.2rem);
+		overflow: hidden;
+		color: var(--muted);
+		font-family: inherit;
+		font-size: 0.88rem;
+		font-weight: 400;
+		letter-spacing: 0.03em;
+		line-height: 1.35;
+		text-align: left;
+		pointer-events: none;
+		opacity: 0.95;
+		transition: opacity 1.25s ease;
+	}
+
+	.captions__line {
+		margin: 0;
+		width: 100%;
+		text-align: left;
+		/* JS owns wrapping — nowrap keeps glyphs from reflowing mid-line. */
+		white-space: nowrap;
+		opacity: 1;
+		transition: opacity 0.35s ease;
+	}
+
+	.captions__line--soft {
+		opacity: 0.5;
+	}
+
+	.captions--fade {
+		opacity: 0;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.captions__line {
+			transition: none;
+		}
+	}
+
 	.center {
 		position: absolute;
 		z-index: 3;
@@ -355,8 +432,23 @@
 		line-height: 1.35;
 	}
 
+	.status-activity {
+		margin: -0.35rem 0 0;
+		max-width: 20rem;
+		color: var(--ink);
+		font-size: 0.82rem;
+		letter-spacing: 0.02em;
+		line-height: 1.3;
+		opacity: 0.9;
+		overflow: hidden;
+		display: -webkit-box;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
+	}
+
 	.status-timer {
-		margin: -0.25rem 0 0;
+		margin: -0.35rem 0 0;
 		min-height: 1.1em;
 		color: var(--muted);
 		font-size: 0.78rem;
