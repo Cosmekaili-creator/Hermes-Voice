@@ -7,6 +7,7 @@ import type { ProviderId } from '$lib/providers/types';
 import { PROVIDER_PCM_RATE } from './pcm';
 import {
 	createRealtimeClientFor,
+	HANDS_FREE_TURN_DETECTION,
 	type RealtimeClient,
 	type RealtimeServerEvent,
 	type TurnDetection
@@ -80,6 +81,12 @@ function isProviderId(value: unknown): value is ProviderId {
 
 function isTalkMode(value: unknown): value is TalkMode {
 	return value === 'ptt' || value === 'handsfree';
+}
+
+/** Provider replies this when we send response.cancel with nothing in flight. */
+function isBenignCancelError(message: string): boolean {
+	const m = message.toLowerCase();
+	return m.includes('no active response') || m.includes('cancellation failed');
 }
 
 function readStoredTalkMode(): TalkMode {
@@ -184,7 +191,7 @@ export function createVoiceDemo() {
 			: `voice-${Date.now()}`;
 
 	function turnDetectionForMode(mode: TalkMode = talkMode): TurnDetection {
-		return mode === 'handsfree' ? { type: 'server_vad' } : null;
+		return mode === 'handsfree' ? HANDS_FREE_TURN_DETECTION : null;
 	}
 
 	function clearThinkTimer() {
@@ -199,6 +206,25 @@ export function createVoiceDemo() {
 		if (cancelArmTimer !== null) {
 			clearTimeout(cancelArmTimer);
 			cancelArmTimer = null;
+		}
+	}
+
+	/** True when a realtime response may still be running (avoid spurious response.cancel). */
+	function responseMayBeActive(): boolean {
+		return (
+			state === 'speaking' ||
+			state === 'thinking' ||
+			hermesBridgeActive ||
+			suppressIdleForTool
+		);
+	}
+
+	function safeCancelResponse() {
+		if (!client?.ready || !responseMayBeActive()) return;
+		try {
+			client.cancelResponse();
+		} catch {
+			/* ignore */
 		}
 	}
 
@@ -355,8 +381,8 @@ export function createVoiceDemo() {
 		suppressIdleForTool = false;
 		hermesBridgeActive = false;
 		busy = false;
+		safeCancelResponse();
 		try {
-			client?.cancelResponse();
 			client?.clearInputBuffer();
 		} catch {
 			/* ignore */
@@ -406,12 +432,13 @@ export function createVoiceDemo() {
 		return audioCtx;
 	}
 
+	/**
+	 * Only stream mic while listening. Hands-free used to append during speaking for
+	 * server-VAD barge-in, but speaker→mic echo cancels long replies every few seconds.
+	 * Interrupt while she talks: tap the button (interruptSpeaking).
+	 */
 	function allowAppend(): boolean {
-		return (
-			!!client?.ready &&
-			!hermesBridgeActive &&
-			(state === 'listening' || (talkMode === 'handsfree' && state === 'speaking'))
-		);
+		return !!client?.ready && !hermesBridgeActive && state === 'listening';
 	}
 
 	async function ensureCapture(ctx: AudioContext): Promise<CaptureHandle> {
@@ -621,23 +648,6 @@ export function createVoiceDemo() {
 		void runHermesBridge(callId, request, myTurn);
 	}
 
-	/** Barge-in: cancel playback only — never clearInputBuffer (would wipe new utterance). */
-	function bargeInFromSpeaking() {
-		turnId += 1;
-		clearThinkTimer();
-		suppressIdleForTool = false;
-		busy = false;
-		try {
-			client?.cancelResponse();
-		} catch {
-			/* ignore */
-		}
-		playback?.interrupt();
-		state = 'listening';
-		statusOverride = null;
-		pulse(12);
-	}
-
 	function handleServerEvent(event: RealtimeServerEvent, myTurn: number) {
 		if (destroyed || myTurn !== turnId) return;
 
@@ -645,15 +655,14 @@ export function createVoiceDemo() {
 			case 'error': {
 				const msg =
 					(typeof event.error?.message === 'string' && event.error.message) || '';
+				// Idle response.cancel (mode switch / disarm) — ignore, do not tear down UI.
+				if (msg && isBenignCancelError(msg)) return;
 				if (msg) failRaw(msg);
 				else fail('error.voiceError');
 				return;
 			}
 			case 'input_audio_buffer.speech_started': {
-				if (talkMode !== 'handsfree' || !handsfreeArmed || hermesBridgeActive) return;
-				if (state === 'speaking') {
-					bargeInFromSpeaking();
-				}
+				// No voice barge-in while speaking (echo). Tap interrupts instead.
 				return;
 			}
 			case 'input_audio_buffer.speech_stopped': {
@@ -980,8 +989,8 @@ export function createVoiceDemo() {
 		endHermesBridgeUi();
 		suppressIdleForTool = false;
 		pulse([10, 40, 10]);
+		safeCancelResponse();
 		try {
-			client?.cancelResponse();
 			client?.clearInputBuffer();
 		} catch {
 			/* ignore */
@@ -1002,8 +1011,8 @@ export function createVoiceDemo() {
 			handsfreeArmed = false;
 		}
 		pulse([10, 40, 10]);
+		safeCancelResponse();
 		try {
-			client?.cancelResponse();
 			client?.clearInputBuffer();
 		} catch {
 			/* ignore */
@@ -1060,8 +1069,8 @@ export function createVoiceDemo() {
 			/* ignore */
 		}
 		hermesAbort = null;
+		safeCancelResponse();
 		try {
-			client?.cancelResponse();
 			client?.clearInputBuffer();
 		} catch {
 			/* ignore */

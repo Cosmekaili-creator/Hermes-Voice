@@ -180,8 +180,10 @@
 	<div class="glow-field" aria-hidden="true"></div>
 	<canvas class="viz" bind:this={canvasEl} aria-hidden="true"></canvas>
 
-	<div class="locale-corner">
+	<div class="mode-corner">
 		<TalkModeSwitch mode={demo.talkMode} onChange={(m) => demo.setTalkMode(m)} />
+	</div>
+	<div class="locale-corner">
 		<LocaleSwitch />
 	</div>
 
@@ -297,16 +299,25 @@
 		pointer-events: none;
 	}
 
+	.mode-corner,
 	.locale-corner {
 		position: absolute;
 		z-index: 4;
 		top: max(0.85rem, env(safe-area-inset-top));
-		right: max(0.85rem, env(safe-area-inset-right));
 		display: flex;
 		flex-wrap: wrap;
-		justify-content: flex-end;
 		gap: 0.4rem;
-		max-width: calc(100vw - 1.7rem);
+		max-width: min(16rem, calc(50vw - 1rem));
+	}
+
+	.mode-corner {
+		left: max(0.85rem, env(safe-area-inset-left));
+		justify-content: flex-start;
+	}
+
+	.locale-corner {
+		right: max(0.85rem, env(safe-area-inset-right));
+		justify-content: flex-end;
 	}
 
 	.center {
