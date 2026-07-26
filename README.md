@@ -127,6 +127,7 @@ Talk modes: **push-to-talk** commits audio from the client; **hands-free** uses 
 
 | Doc | Contents |
 |-----|----------|
+| [CHANGELOG.md](CHANGELOG.md) | Release notes |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Env vars, wizard, multi-user, providers |
 | [docs/OPS.md](docs/OPS.md) | N-profile ops, Compose, Hermes host allowlist |
 | [deploy/README.md](deploy/README.md) | systemd / nginx install recipe |
