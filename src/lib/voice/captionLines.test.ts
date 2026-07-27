@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	advanceCaptionBreaks,
+	CAPTION_WINDOW,
 	firstLineLength,
 	linesFromBreaks,
 	windowCaptionLines
@@ -49,8 +50,8 @@ describe('advanceCaptionBreaks + linesFromBreaks', () => {
 });
 
 describe('windowCaptionLines', () => {
-	it('marks only the third-from-newest as soft', () => {
-		const views = windowCaptionLines(['a', 'b', 'c', 'd']);
+	it('marks the oldest visible line as soft when lines are dropped', () => {
+		const views = windowCaptionLines(['a', 'b', 'c', 'd'], 3);
 		expect(views.map((v) => v.text)).toEqual(['b', 'c', 'd']);
 		expect(views.map((v) => v.soft)).toEqual([true, false, false]);
 		expect(views.map((v) => v.id)).toEqual([1, 2, 3]);
@@ -59,5 +60,24 @@ describe('windowCaptionLines', () => {
 	it('keeps two lines fully opaque', () => {
 		const views = windowCaptionLines(['a', 'b']);
 		expect(views.every((v) => !v.soft)).toBe(true);
+	});
+
+	it('retains all lines and marks none soft with the default window', () => {
+		const views = windowCaptionLines(['a', 'b', 'c', 'd']);
+		expect(views.map((v) => v.text)).toEqual(['a', 'b', 'c', 'd']);
+		expect(views.every((v) => !v.soft)).toBe(true);
+		expect(views.map((v) => v.id)).toEqual([0, 1, 2, 3]);
+	});
+
+	it('caps to CAPTION_WINDOW lines and marks only the oldest visible as soft', () => {
+		const total = CAPTION_WINDOW + 3;
+		const allLines = Array.from({ length: total }, (_, i) => `line${i}`);
+		const views = windowCaptionLines(allLines);
+		expect(views).toHaveLength(CAPTION_WINDOW);
+		expect(views.map((v) => v.id)).toEqual(
+			Array.from({ length: CAPTION_WINDOW }, (_, i) => total - CAPTION_WINDOW + i)
+		);
+		expect(views[0]!.soft).toBe(true);
+		expect(views[views.length - 1]!.soft).toBe(false);
 	});
 });

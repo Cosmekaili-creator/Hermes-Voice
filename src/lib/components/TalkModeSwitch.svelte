@@ -51,7 +51,7 @@
 	}
 
 	.talk-mode__btn {
-		min-height: 1.7rem;
+		min-height: 1.8rem;
 		padding: 0.2rem 0.55rem;
 		border: none;
 		border-radius: 999px;

@@ -5,14 +5,14 @@ import type { ProviderId } from '$lib/providers/types';
 import { createMicCapture, type CaptureHandle } from './audioCapture';
 import { createPlayback, type PlaybackHandle } from './audioPlayback';
 import { createSseParseState, pushSseChunk } from '$lib/sseParse';
-	import { createCaptionDebugger } from './captionDebug';
-	import {
-		advanceCaptionBreaks,
-		linesFromBreaks,
-		windowCaptionLines,
-		type CaptionLineView
-	} from './captionLines';
-	import { formatHermesToolActivity } from './captionTruncate';
+import { createCaptionDebugger } from './captionDebug';
+import {
+	advanceCaptionBreaks,
+	linesFromBreaks,
+	windowCaptionLines,
+	type CaptionLineView
+} from './captionLines';
+import { formatHermesToolActivity, truncateSnippet } from './captionTruncate';
 import { buildHermesVoiceInstructions } from './instructions';
 import { PROVIDER_PCM_RATE } from './pcm';
 import {
@@ -22,6 +22,7 @@ import {
 	type RealtimeServerEvent,
 	type TurnDetection
 } from './realtimeClient';
+import { isOffline, sessionErrorForStatus, transportErrorCode } from './sessionErrors';
 
 export type CaptionPhase = 'hidden' | 'live' | 'fading';
 
@@ -149,8 +150,13 @@ export function createVoiceDemo() {
 	let hermesBridgeActive = $state(false);
 	let cancelArmed = $state(false);
 	let talkMode = $state<TalkMode>(readStoredTalkMode());
+	/** Browser online/offline hint. Display-only — never gates start/stop. */
+	let online = $state(true);
+	let networkWatchAttached = false;
 	/** True while hands-free is armed for continuous listen (may outlive UI idle briefly). */
 	let handsfreeArmed = $state(false);
+	/** Reactive mirror of client.supportsBargeIn (client itself is not $state). */
+	let clientBargeIn = $state(false);
 	/** Elapsed seconds while Hermes works; null when not in a wait. */
 	let waitElapsedSec = $state<number | null>(null);
 	/** Blocks response.done → idle until post-tool audio starts (or fail). */
@@ -170,17 +176,21 @@ export function createVoiceDemo() {
 	let captionRevealLen = 0;
 	/** Exclusive indices where wrapped lines were committed (never reflow). */
 	let captionBreaks: number[] = [];
+	/** Typed user turn echoed above the reply (only user-side text we have). */
+	let captionUserEcho = $state<string | null>(null);
+	let captionUserEchoTurn = -1;
 
 	/** Fallback pace only for WebRTC (no PCM queue clock). */
 	const CAPTION_CHARS_PER_SEC = 16;
 	const CAPTION_TICK_MS = 50;
 	/** Keep final lines readable after audio ends, then fade. */
-	const CAPTION_HOLD_MS = 3500;
+	const CAPTION_HOLD_MS = 4500;
 	const CAPTION_FADE_MS = 1400;
 	const captionDbg = createCaptionDebugger();
 	let captionRevealTicks = 0;
 
 	const statusLabel = $derived.by(() => {
+		if (!online) return t('error.offline');
 		if (statusOverride?.kind === 'raw') return statusOverride.text;
 		if (statusOverride?.kind === 'key') return t(statusOverride.key);
 		if (busy && state === 'idle') return t('status.connecting');
@@ -199,12 +209,25 @@ export function createVoiceDemo() {
 
 	const buttonDisabled = $derived((busy || state === 'thinking') && !hermesBridgeActive);
 	const isHermesWorking = $derived(hermesBridgeActive);
+	/** Current keyed status/error (null when raw vendor text or no override). */
+	const statusKey = $derived(statusOverride?.kind === 'key' ? statusOverride.key : null);
+	/**
+	 * Hands-free mic is open while Hermes speaks (barge-in providers only).
+	 * Mirrors allowMicSend()'s barge-in clause exactly — keep both in sync.
+	 */
+	const micLive = $derived(
+		clientBargeIn && state === 'speaking' && talkMode === 'handsfree' && handsfreeArmed
+	);
+	/** Typed input is a peer of the mic: allowed only when no turn is in flight. */
+	const canSendText = $derived(
+		!busy && !hermesBridgeActive && (state === 'idle' || state === 'listening')
+	);
 
 	let audioCtx: AudioContext | null = null;
 	let capture: CaptureHandle | null = null;
 	let playback: PlaybackHandle | null = null;
 	let client: RealtimeClient | null = null;
-	let token: MintResult | null = null;
+	let token = $state.raw<MintResult | null>(null);
 	let thinkTimer: ReturnType<typeof setTimeout> | null = null;
 	let cancelArmTimer: ReturnType<typeof setTimeout> | null = null;
 	let waitTickTimer: ReturnType<typeof setInterval> | null = null;
@@ -230,7 +253,10 @@ export function createVoiceDemo() {
 		return mode === 'handsfree' ? handsFreeTurnDetectionFor(activeProvider()) : null;
 	}
 
-	/** Mic send policy: listening always; OpenAI WebRTC also while speaking (barge-in + AEC). */
+	/**
+	 * Mic send policy: listening always; OpenAI WebRTC also while speaking (barge-in + AEC).
+	 * Mirrored (not called) by the `micLive` derived for reactive UI — keep both in sync.
+	 */
 	function allowMicSend(): boolean {
 		if (!client?.ready || hermesBridgeActive) return false;
 		if (state === 'listening') return true;
@@ -294,6 +320,28 @@ export function createVoiceDemo() {
 			clearInterval(warmRecheckTimer);
 			warmRecheckTimer = null;
 		}
+	}
+
+	const handleOnline = () => {
+		online = true;
+	};
+	const handleOffline = () => {
+		online = false;
+	};
+
+	function attachNetworkWatch() {
+		if (networkWatchAttached || typeof window === 'undefined') return;
+		networkWatchAttached = true;
+		online = !isOffline();
+		window.addEventListener('online', handleOnline);
+		window.addEventListener('offline', handleOffline);
+	}
+
+	function detachNetworkWatch() {
+		if (!networkWatchAttached || typeof window === 'undefined') return;
+		networkWatchAttached = false;
+		window.removeEventListener('online', handleOnline);
+		window.removeEventListener('offline', handleOffline);
 	}
 
 	function clearCaptionFadeTimer() {
@@ -380,6 +428,8 @@ export function createVoiceDemo() {
 		captionBreaks = [];
 		captionLines = [];
 		captionPhase = 'hidden';
+		captionUserEcho = null;
+		captionUserEchoTurn = -1;
 	}
 
 	function appendCaptionDelta(delta: string) {
@@ -401,6 +451,7 @@ export function createVoiceDemo() {
 	}
 
 	function startCaptionTurn() {
+		if (captionUserEchoTurn !== turnId) captionUserEcho = null;
 		captionDbg.log('turn_start', captionSnap());
 		clearCaptionFadeTimer();
 		stopCaptionReveal();
@@ -426,6 +477,8 @@ export function createVoiceDemo() {
 			captionRevealLen = 0;
 			captionBreaks = [];
 			captionPhase = 'hidden';
+			captionUserEcho = null;
+			captionUserEchoTurn = -1;
 			return;
 		}
 		captionPhase = 'live';
@@ -444,6 +497,8 @@ export function createVoiceDemo() {
 				captionBreaks = [];
 				captionLines = [];
 				captionPhase = 'hidden';
+				captionUserEcho = null;
+				captionUserEchoTurn = -1;
 				void captionDbg.flush();
 			}, CAPTION_FADE_MS);
 		}, CAPTION_HOLD_MS);
@@ -520,6 +575,11 @@ export function createVoiceDemo() {
 	}
 
 	function fail(code: VoiceErrorCode, opts?: { reconnect?: boolean }) {
+		// A dropped connection means any in-flight Hermes lookup can never be
+		// delivered back — abort it rather than let it finish into the void.
+		hermesAbort?.abort();
+		hermesAbort = null;
+		turnId += 1;
 		playback?.interrupt();
 		clearCaptions();
 		try {
@@ -548,6 +608,12 @@ export function createVoiceDemo() {
 	}
 
 	function failRaw(vendorMessage: string, opts?: { reconnect?: boolean }) {
+		// See fail(): same reasoning — a dead connection can't deliver a pending
+		// Hermes lookup, so stop wasting the round trip rather than let it finish
+		// into the void.
+		hermesAbort?.abort();
+		hermesAbort = null;
+		turnId += 1;
 		playback?.interrupt();
 		clearCaptions();
 		try {
@@ -666,6 +732,23 @@ export function createVoiceDemo() {
 		return handle;
 	}
 
+	/** Drop the mic handle so the next start performs a fresh getUserMedia. */
+	function resetCapture() {
+		capture?.stop();
+		capture?.destroy();
+		capture = null;
+		micAnalyser = null;
+	}
+
+	/** Mic-denied recovery: re-request permission without a page reload. */
+	function retryMic() {
+		if (destroyed || busy) return;
+		statusOverride = null;
+		needsReconnect = false;
+		resetCapture();
+		void startListening();
+	}
+
 	function tokenFresh(): boolean {
 		if (!token?.value) return false;
 		if (!Number.isFinite(token.expires_at)) return true;
@@ -673,24 +756,33 @@ export function createVoiceDemo() {
 	}
 
 	async function mintSession(): Promise<MintResult> {
-		const res = await fetch('/api/session', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			credentials: 'same-origin',
-			body: '{}'
-		});
-		if (!res.ok) {
-			if (res.status === 401) throw new VoiceAppError('error.sessionUnauthorized', true);
-			if (res.status === 500) throw new VoiceAppError('error.sessionUnavailable', true);
-			throw new VoiceAppError('error.sessionRequestFailed', true);
+		let res: Response;
+		try {
+			res = await fetch('/api/session', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				credentials: 'same-origin',
+				body: '{}'
+			});
+		} catch {
+			// fetch threw — no HTTP response at all (offline / DNS / TLS / server down).
+			throw new VoiceAppError(transportErrorCode(), true);
 		}
-		const body = (await res.json()) as {
+		if (!res.ok) {
+			throw new VoiceAppError(sessionErrorForStatus(res.status), true);
+		}
+		let body: {
 			value?: string;
 			expires_at?: number;
 			provider?: string;
 			model?: string;
 			voice?: string;
 		};
+		try {
+			body = await res.json();
+		} catch {
+			throw new VoiceAppError('error.sessionUnavailable', true);
+		}
 		if (typeof body.value !== 'string' || body.value.length === 0) {
 			throw new VoiceAppError('error.sessionUnavailable', true);
 		}
@@ -1087,9 +1179,14 @@ export function createVoiceDemo() {
 					onError: (message) => {
 						if (destroyed) return;
 						if (state !== 'idle' || handsfreeArmed) {
+							// Transport-level failure — the socket/peer connection is dead or
+							// dying. Force the same full teardown+reconnect as onClose (below)
+							// rather than quietly reverting to idle while holding a broken
+							// client/token, which previously left the app looking "fine" on a
+							// connection that could no longer deliver anything.
 							const mapped = CONNECT_ERROR_CODES[message as keyof typeof CONNECT_ERROR_CODES];
-							if (mapped) fail(mapped);
-							else failRaw(message);
+							if (mapped) fail(mapped, { reconnect: true });
+							else failRaw(message, { reconnect: true });
 						}
 					},
 					onClose: () => {
@@ -1139,6 +1236,7 @@ export function createVoiceDemo() {
 				throw new Error('destroyed');
 			}
 			client = rt;
+			clientBargeIn = rt.supportsBargeIn;
 			syncMicSend();
 			return rt;
 		})();
@@ -1151,6 +1249,7 @@ export function createVoiceDemo() {
 	}
 
 	async function warm(): Promise<void> {
+		attachNetworkWatch();
 		if (destroyed) return;
 		if (busy || state !== 'idle' || hermesBridgeActive) return;
 		if (warmInFlight) return warmInFlight;
@@ -1353,6 +1452,94 @@ export function createVoiceDemo() {
 		}, THINK_TIMEOUT_MS);
 	}
 
+	/**
+	 * Typed turn: inject text into the LIVE realtime session so Hermes replies in
+	 * voice (audio + caption), identical to a spoken turn. Never routes to /api/hermes.
+	 */
+	async function sendText(raw: string) {
+		if (destroyed) return;
+		const text = raw.trim();
+		if (!text || !canSendText) return;
+
+		busy = true;
+		statusOverride = null;
+		turnId += 1;
+		const myTurn = turnId;
+
+		try {
+			if (warmInFlight) {
+				try {
+					await warmInFlight;
+				} catch {
+					/* warm errors are silent; connect failures surface below */
+				}
+			}
+			if (destroyed || myTurn !== turnId) {
+				busy = false;
+				return;
+			}
+
+			await ensureAudio();
+			// NOTE: for OpenAI (WebRTC) ensureRealtime() itself calls ensureCapture(),
+			// i.e. a typed-only user still hits getUserMedia on this provider.
+			await ensureRealtime();
+			if (destroyed || myTurn !== turnId) {
+				busy = false;
+				return;
+			}
+
+			// Never let a half-open mic turn race the typed turn.
+			if (state === 'listening') {
+				capture?.stop();
+				try {
+					client?.clearInputBuffer();
+				} catch {
+					/* ignore */
+				}
+			}
+
+			playback?.interrupt();
+			captionUserEcho = truncateSnippet(text, 160);
+			captionUserEchoTurn = myTurn;
+
+			state = 'thinking';
+			syncMicSend();
+			statusOverride = null;
+			pulse(8);
+
+			client?.sendUserText(text);
+			client?.respond();
+
+			clearThinkTimer();
+			thinkTimer = setTimeout(() => {
+				if (destroyed || myTurn !== turnId) return;
+				if (state === 'thinking' && !hermesBridgeActive) {
+					fail('error.noReply');
+				}
+			}, THINK_TIMEOUT_MS);
+		} catch (err) {
+			if (destroyed || myTurn !== turnId) {
+				busy = false;
+				return;
+			}
+			const name = err instanceof DOMException ? err.name : '';
+			if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+				hardDisarmCapture();
+				fail('error.micDenied');
+				return;
+			}
+			if (err instanceof VoiceAppError) {
+				fail(err.code, { reconnect: err.reconnect });
+				return;
+			}
+			if (err instanceof VoiceRawError) {
+				failRaw(err.message, { reconnect: err.reconnect });
+				return;
+			}
+			fail('error.couldNotStart');
+		}
+	}
+
 	function disarmHandsfree() {
 		handsfreeArmed = false;
 		turnId += 1;
@@ -1476,6 +1663,7 @@ export function createVoiceDemo() {
 		clearCancelArm();
 		clearWaitRotation();
 		clearWarmRecheck();
+		detachNetworkWatch();
 		clearCaptions();
 		captionDbg.destroy();
 		hermesWaitActivity = null;
@@ -1534,6 +1722,18 @@ export function createVoiceDemo() {
 		get handsfreeArmed() {
 			return handsfreeArmed;
 		},
+		get online() {
+			return online;
+		},
+		get statusKey() {
+			return statusKey;
+		},
+		get micLive() {
+			return micLive;
+		},
+		get provider() {
+			return token?.provider ?? null;
+		},
 		get waitElapsedSec() {
 			return waitElapsedSec;
 		},
@@ -1546,6 +1746,12 @@ export function createVoiceDemo() {
 		get captionPhase() {
 			return captionPhase;
 		},
+		get captionUserEcho() {
+			return captionUserEcho;
+		},
+		get canSendText() {
+			return canSendText;
+		},
 		get micAnalyser() {
 			return micAnalyser;
 		},
@@ -1555,6 +1761,8 @@ export function createVoiceDemo() {
 		warm,
 		toggle,
 		setTalkMode,
+		retryMic,
+		sendText,
 		refreshInstructions,
 		destroy
 	};

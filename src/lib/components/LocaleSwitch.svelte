@@ -41,7 +41,7 @@
 
 	.locale__btn {
 		min-width: 2rem;
-		min-height: 1.7rem;
+		min-height: 1.8rem;
 		padding: 0.2rem 0.45rem;
 		border: none;
 		border-radius: 999px;

@@ -123,6 +123,8 @@ export type RealtimeClient = {
 	cancelResponse(): void;
 	clearInputBuffer(): void;
 	sendFunctionCallOutput(callId: string, output: string): void;
+	/** Inject a typed user turn as if spoken. Caller triggers `respond()`. */
+	sendUserText(text: string): void;
 	respond(): void;
 	close(): void;
 };

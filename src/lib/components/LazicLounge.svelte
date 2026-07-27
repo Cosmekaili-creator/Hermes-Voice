@@ -2,11 +2,20 @@
 	import { onMount } from 'svelte';
 	import { fly } from 'svelte/transition';
 	import { getLocale, t } from '$lib/i18n';
+	import type { ProviderId } from '$lib/providers/types';
 	import { createVoiceDemo } from '$lib/voice/voiceDemo';
+	import { markMicPrimed, shouldPrimeMic } from '$lib/voice/micPrimer';
 	import { drawLazicLounge, type VizQuality } from '$lib/viz/lazicLounge';
 	import { createScreenWakeLock } from '$lib/wakeLock';
 	import LocaleSwitch from './LocaleSwitch.svelte';
+	import MicPrimer from './MicPrimer.svelte';
 	import TalkModeSwitch from './TalkModeSwitch.svelte';
+	import TextComposer from './TextComposer.svelte';
+
+	const PROVIDER_LABELS: Record<ProviderId, string> = {
+		xai: 'xAI',
+		openai: 'OpenAI'
+	};
 
 	// Auth is cookie-only: SSR grants HttpOnly session from valid ?k=; SPA never retains the key.
 	const demo = createVoiceDemo();
@@ -16,6 +25,16 @@
 	const idleBars = new Uint8Array(256); // near-flat idle/thinking — no fake speech motion
 
 	let canvasEl: HTMLCanvasElement | undefined = $state();
+	let showMicPrimer = $state(false);
+	let primerTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function dismissPrimer() {
+		showMicPrimer = false;
+		if (primerTimer !== null) {
+			clearTimeout(primerTimer);
+			primerTimer = null;
+		}
+	}
 
 	const pressed = $derived(demo.state === 'listening' || demo.state === 'speaking');
 	const ambientIntensity = $derived.by(() => {
@@ -52,6 +71,31 @@
 	$effect(() => {
 		getLocale();
 		demo.refreshInstructions();
+	});
+
+	let captionsEl: HTMLDivElement | undefined = $state();
+
+	// Keep the newest line in view as text reveals; skip while the reader scrolled up.
+	let captionPinned = $state(true);
+
+	function onCaptionScroll() {
+		const el = captionsEl;
+		if (!el) return;
+		captionPinned = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+	}
+
+	$effect(() => {
+		const el = captionsEl;
+		const lines = demo.captionLines;
+		// Depend on both line count and the growing tail so reveal ticks re-scroll.
+		const tail = lines.length > 0 ? lines[lines.length - 1]!.text : '';
+		if (!el || !captionPinned) return;
+		void tail;
+		el.scrollTop = el.scrollHeight;
+	});
+
+	$effect(() => {
+		if (demo.captionPhase === 'hidden') captionPinned = true;
 	});
 
 	function loungeRadius() {
@@ -100,8 +144,15 @@
 	onMount(() => {
 		void wakeLock.enable();
 		void demo.warm();
+		void shouldPrimeMic().then((prime) => {
+			if (!prime) return;
+			markMicPrimed(); // one-time per browser, marked on display
+			showMicPrimer = true;
+			primerTimer = setTimeout(dismissPrimer, 12_000);
+		});
 		return () => {
 			void wakeLock.disable();
+			dismissPrimer();
 			demo.destroy();
 		};
 	});
@@ -184,16 +235,28 @@
 		<TalkModeSwitch mode={demo.talkMode} onChange={(m) => demo.setTalkMode(m)} />
 	</div>
 	<div class="locale-corner">
+		{#if demo.provider}
+			<p class="provider-badge">
+				<span class="provider-badge__label">{t('meta.provider')}: </span>{PROVIDER_LABELS[
+					demo.provider
+				]}
+			</p>
+		{/if}
 		<LocaleSwitch />
 	</div>
 
-	{#if demo.captionLines.length > 0 || demo.captionPhase !== 'hidden'}
+	{#if demo.captionLines.length > 0 || demo.captionUserEcho || demo.captionPhase !== 'hidden'}
 		<div
 			class="captions"
 			class:captions--fade={demo.captionPhase === 'fading'}
 			aria-live="off"
 			aria-label={t('status.captions')}
+			bind:this={captionsEl}
+			onscroll={onCaptionScroll}
 		>
+			{#if demo.captionUserEcho}
+				<p class="captions__line captions__line--user">{demo.captionUserEcho}</p>
+			{/if}
 			{#each demo.captionLines as line (line.id)}
 				<p
 					class="captions__line"
@@ -210,6 +273,17 @@
 	<div class="center">
 		<p class="brand">HERMES</p>
 		<p class="status" aria-live="polite">{demo.statusLabel}</p>
+		{#if demo.statusKey === 'error.micDenied'}
+			<button type="button" class="retry" onclick={() => demo.retryMic()}
+				>{t('button.retryMic')}</button
+			>
+		{/if}
+		{#if demo.talkMode === 'handsfree' && demo.state === 'speaking'}
+			<p class="mic-chip" class:mic-chip--live={demo.micLive} aria-live="off">
+				<span class="mic-chip__dot" aria-hidden="true"></span>
+				{demo.micLive ? t('status.micLive') : t('status.micMuted')}
+			</p>
+		{/if}
 		{#if demo.hermesWaitActivity}
 			<p class="status-activity" aria-live="off">{demo.hermesWaitActivity}</p>
 		{/if}
@@ -219,6 +293,10 @@
 	</div>
 
 	<div class="dock">
+		{#if showMicPrimer}
+			<MicPrimer onDismiss={dismissPrimer} />
+		{/if}
+
 		<button
 			type="button"
 			class="talk"
@@ -226,11 +304,16 @@
 			aria-pressed={pressed}
 			aria-label={buttonLabel}
 			disabled={demo.buttonDisabled}
-			onclick={() => demo.toggle()}
+			onclick={() => {
+				dismissPrimer();
+				demo.toggle();
+			}}
 		>
 			<span class="talk__dot" aria-hidden="true"></span>
 			<span>{buttonLabel}</span>
 		</button>
+
+		<TextComposer enabled={demo.canSendText} onSend={(text) => demo.sendText(text)} />
 	</div>
 </div>
 
@@ -328,6 +411,7 @@
 		top: max(0.85rem, env(safe-area-inset-top));
 		display: flex;
 		flex-wrap: wrap;
+		align-items: center;
 		gap: 0.4rem;
 		max-width: min(16rem, calc(50vw - 1rem));
 	}
@@ -340,6 +424,38 @@
 	.locale-corner {
 		right: max(0.85rem, env(safe-area-inset-right));
 		justify-content: flex-end;
+	}
+
+	.provider-badge {
+		display: inline-flex;
+		align-items: center;
+		margin: 0;
+		min-height: 1.8rem;
+		padding: 0.2rem 0.6rem;
+		border: 1px solid rgba(202, 253, 255, 0.22);
+		border-radius: 999px;
+		background: rgba(4, 20, 24, 0.55);
+		backdrop-filter: blur(6px);
+		color: var(--muted);
+		font-size: 0.66rem;
+		font-weight: 500;
+		letter-spacing: 0.08em;
+		opacity: 0.75;
+	}
+
+	/* Announced by every screen reader, works on touch, needs no ARIA.
+	   `title` never renders on touch, and <p> (role=paragraph) is
+	   name-prohibited in ARIA 1.2, so aria-label exposure is browser-dependent. */
+	.provider-badge__label {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		margin: -1px;
+		padding: 0;
+		border: 0;
+		overflow: hidden;
+		clip-path: inset(50%);
+		white-space: nowrap;
 	}
 
 	/* Above the Lazic ring — stable left-growing lines (center alignment shifts glyphs). */
@@ -355,10 +471,29 @@
 		flex-direction: column;
 		align-items: stretch;
 		gap: 0.1rem;
-		/* Two live lines + one soft predecessor. */
+		/* Grow in place: retain the full reply, cap visible height, scroll for the rest.
+		   Vertical budget, derived — do not eyeball this:
+		     46dvh    .center's `top: 46%` (keep these two numbers in sync)
+		   − 3.15rem  half of .center's WORST-CASE height: ~4.5rem of always-on children
+		              PLUS ~1.8rem for Item 7's .mic-chip, which renders in exactly the
+		              state where captions are longest (handsfree + speaking). .center is
+		              translate(-50%,-50%), so only half its height grows upward into us.
+		   − 1rem     breathing room
+		   − our own top offset (safe-area aware, mirrors the `top` declaration above)
+		   Floor = today's 3-line box so small viewports never regress. */
 		min-height: 0;
-		max-height: calc(1.35em * 3 + 0.2rem);
-		overflow: hidden;
+		max-height: max(
+			calc(1.35em * 3 + 0.2rem),
+			min(
+				calc(1.35em * 12 + 0.2rem),
+				calc(46dvh - 4.15rem - max(8.75rem, env(safe-area-inset-top, 0px) + 7rem))
+			)
+		);
+		overflow-y: auto;
+		overflow-x: hidden;
+		overscroll-behavior: contain;
+		scrollbar-width: none;
+		scroll-behavior: smooth;
 		color: var(--muted);
 		font-family: inherit;
 		font-size: 0.88rem;
@@ -366,9 +501,14 @@
 		letter-spacing: 0.03em;
 		line-height: 1.35;
 		text-align: left;
-		pointer-events: none;
+		pointer-events: auto;
 		opacity: 0.95;
 		transition: opacity 1.25s ease;
+	}
+
+	.captions::-webkit-scrollbar {
+		width: 0;
+		height: 0;
 	}
 
 	.captions__line {
@@ -385,13 +525,26 @@
 		opacity: 0.5;
 	}
 
+	.captions__line--user {
+		/* JS wrapping only applies to Hermes lines — let the echo wrap naturally. */
+		white-space: normal;
+		color: var(--ink);
+		opacity: 0.62;
+	}
+
 	.captions--fade {
 		opacity: 0;
 	}
 
 	@media (prefers-reduced-motion: reduce) {
+		.captions {
+			scroll-behavior: auto;
+		}
 		.captions__line {
 			transition: none;
+		}
+		.mic-chip--live .mic-chip__dot {
+			animation: none;
 		}
 	}
 
@@ -457,14 +610,68 @@
 		opacity: 0.85;
 	}
 
+	.retry {
+		pointer-events: auto;
+		min-height: 1.8rem;
+		padding: 0.25rem 0.9rem;
+		border: 1px solid rgba(202, 253, 255, 0.45);
+		border-radius: 999px;
+		background: rgba(4, 20, 24, 0.7);
+		color: var(--ink);
+		font: inherit;
+		font-size: 0.76rem;
+		letter-spacing: 0.03em;
+		cursor: pointer;
+		backdrop-filter: blur(6px);
+	}
+	.retry:hover {
+		border-color: var(--cyan);
+	}
+	.retry:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
+	}
+
+	.mic-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		margin: -0.15rem 0 0;
+		padding: 0.18rem 0.6rem;
+		border: 1px solid rgba(202, 253, 255, 0.22);
+		border-radius: 999px;
+		background: rgba(4, 20, 24, 0.55);
+		backdrop-filter: blur(6px);
+		color: var(--muted);
+		font-size: 0.68rem;
+		letter-spacing: 0.04em;
+	}
+	.mic-chip__dot {
+		width: 0.4rem;
+		height: 0.4rem;
+		border-radius: 50%;
+		background: #4a6c70;
+	}
+	.mic-chip--live {
+		border-color: rgba(94, 231, 255, 0.45);
+		color: var(--ink);
+	}
+	.mic-chip--live .mic-chip__dot {
+		background: var(--accent);
+		box-shadow: 0 0 8px var(--accent);
+		animation: talk-dot 1.6s ease-in-out infinite;
+	}
+
 	.dock {
 		position: absolute;
 		z-index: 3;
 		left: 0;
 		right: 0;
-		bottom: max(2rem, 12dvh);
+		bottom: max(1rem, env(safe-area-inset-bottom));
 		display: flex;
-		justify-content: center;
+		flex-direction: column;
+		align-items: center;
+		gap: 1.75rem;
 		padding: 0 1.5rem;
 	}
 

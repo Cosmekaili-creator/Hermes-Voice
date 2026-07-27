@@ -4,6 +4,7 @@ export const fr = {
 	'meta.title': 'Hermes Voice',
 	'meta.language': 'Langue',
 	'meta.talkMode': 'Mode de parole',
+	'meta.provider': 'Fournisseur vocal',
 
 	'mode.ptt': 'Appuyer pour parler',
 	'mode.handsfree': 'Mains libres',
@@ -21,6 +22,8 @@ export const fr = {
 	'status.connecting': 'Connexion…',
 	'status.cancelArm': 'Appuyez encore pour annuler',
 	'status.cancelled': 'Annulé',
+	'status.micLive': 'Micro actif — parlez pour interrompre',
+	'status.micMuted': 'Micro coupé pendant qu’Hermes parle',
 
 	'button.pressToTalk': 'Appuyez pour parler',
 	'button.armHandsfree': 'Appuyez pour écouter',
@@ -32,6 +35,16 @@ export const fr = {
 	'button.cancelArm': 'Appuyez encore pour annuler',
 	'button.connecting': 'Connexion…',
 	'button.reconnect': 'Reconnecter',
+	'button.retryMic': 'Réessayer',
+
+	'mic.primerTitle': 'Accès au micro',
+	'mic.primerBody':
+		'Hermes a besoin de votre micro pour vous entendre. Votre navigateur demandera l’autorisation la première fois que vous appuierez pour parler.',
+	'mic.primerDismiss': 'Compris',
+
+	'compose.label': 'Écrire un message à Hermes',
+	'compose.placeholder': 'Écrire plutôt…',
+	'compose.send': 'Envoyer',
 
 	'error.micDenied': 'Micro refusé — autorisez l’accès dans le navigateur, puis réessayez',
 	'error.couldNotStart': 'Impossible de démarrer la voix',
@@ -53,6 +66,10 @@ export const fr = {
 	'error.voiceError': 'Erreur vocale',
 	'error.couldNotSendAudio': 'Impossible d’envoyer l’audio',
 	'error.realtimeSessionError': 'Erreur de session temps réel',
+	'error.offline': 'Vous êtes hors ligne — vérifiez votre connexion',
+	'error.networkFailed': 'Erreur réseau — Hermes Voice injoignable',
+	'error.sessionForbidden': 'Session refusée — rechargez la page',
+	'error.sessionRateLimited': 'Trop de tentatives — patientez un instant',
 
 	'gate.accessRestricted': 'Accès restreint',
 

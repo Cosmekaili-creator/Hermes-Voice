@@ -1,4 +1,5 @@
 import { VOICE_TOOLS } from '$lib/voice/tools';
+import { userTextItem } from '../items';
 import type {
 	RealtimeClient,
 	RealtimeClientHandlers,
@@ -347,6 +348,10 @@ export function createRealtimeClient(
 					output
 				}
 			});
+		},
+		sendUserText(text: string) {
+			if (!ready) return;
+			send({ type: 'conversation.item.create', item: userTextItem(text) });
 		},
 		respond() {
 			send({ type: 'response.create' });

@@ -3,14 +3,14 @@
 export type CaptionLineView = {
 	id: number;
 	text: string;
-	/** Third-from-newest visible line — 50% opacity before it exits. */
+	/** Oldest visible line, only when older lines were dropped — 50% opacity fade cue. */
 	soft: boolean;
 };
 
 /** ~10 words / line at Lounge caption width (~28rem / 0.88rem type). */
 export const CAPTION_CHARS_PER_LINE = 58;
-/** Two full lines + one fading predecessor. */
-export const CAPTION_WINDOW = 3;
+/** Retained caption lines for the current reply; CSS caps how many are visible + scrolls. */
+export const CAPTION_WINDOW = 12;
 
 /**
  * Length of the first wrapped line within `chunk` (exclusive end index).
@@ -70,20 +70,22 @@ export function linesFromBreaks(text: string, breaks: readonly number[]): string
 }
 
 /**
- * Last up to 3 lines: newest two at full opacity; the one before that is soft (50%).
- * `id` is the stable line index in the utterance (for keyed transitions).
+ * Last up to `window` lines. The oldest visible line is soft (50%) only when
+ * older lines were dropped — a fade cue that content scrolled out of retention.
  */
-export function windowCaptionLines(allLines: readonly string[]): CaptionLineView[] {
+export function windowCaptionLines(
+	allLines: readonly string[],
+	window = CAPTION_WINDOW
+): CaptionLineView[] {
 	const total = allLines.length;
 	if (total === 0) return [];
-	const from = Math.max(0, total - CAPTION_WINDOW);
+	const from = Math.max(0, total - window);
 	const out: CaptionLineView[] = [];
 	for (let i = from; i < total; i += 1) {
-		const distFromEnd = total - 1 - i;
 		out.push({
 			id: i,
 			text: allLines[i]!,
-			soft: distFromEnd === 2
+			soft: i === from && from > 0
 		});
 	}
 	return out;
