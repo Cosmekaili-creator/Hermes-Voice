@@ -5,7 +5,7 @@
 
 Private **realtime voice** web UI for [Hermes Agent](https://github.com/NousResearch/hermes-agent) — a thin layer that talks through a realtime speech provider and delegates tool-heavy work to your Hermes instance.
 
-- **Lounge** — press-to-talk (default) or hands-free (server VAD); mic + playback visualizer
+- **Lounge** — press-to-talk (default) or hands-free (server VAD), or type instead; mic + playback visualizer
 - **Providers** — [xAI](https://x.ai/) realtime (default) or [OpenAI](https://openai.com/) Realtime via `VOICE_PROVIDER`
 - **Hermes bridge** — email, calendar, contacts, and other tool work via `ask_hermes` → your Hermes API
 - **Auth** — URL key gate (`?k=`); optional multi-user with one Hermes **profile** per Voice user
@@ -134,7 +134,7 @@ SvelteKit ──POST /api/hermes──► Hermes Agent (:8642 / per-user port)
    └── mints ephemeral client secret (long-lived API key stays on server)
 ```
 
-Talk modes: **push-to-talk** commits audio from the client; **hands-free** uses provider server VAD. Locale switch affects UI strings and soft-hints voice instructions.
+Talk modes: **push-to-talk** commits audio from the client; **hands-free** uses provider server VAD. A typed-text field is always available as a third input path — it injects straight into the live session as if spoken, so Hermes still replies in voice, on either provider. Locale switch affects UI strings and soft-hints voice instructions.
 
 ## Docs
 

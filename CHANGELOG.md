@@ -5,6 +5,27 @@ All notable changes to Hermes Voice are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- One-time mic-permission priming notice before the first mic request, plus a "Try again" retry on mic-denied that re-requests permission without a page reload
+- Captions now retain and scroll the full reply in place (was hard-capped at 3 lines), auto-pinned to the newest line unless the reader scrolls up
+- Typed-text alternative to speaking: text is injected into the live realtime session as a spoken turn, so Hermes still replies in voice + caption on both xAI and OpenAI — full `ask_hermes` tool parity, not a silent shortcut
+- Specific error text for 403 / 429 / offline / network-down failures (previously all collapsed into one generic "Session request failed"), plus a live online/offline indicator
+- Hands-free mic-live / muted indicator, tied to each provider's real barge-in support (OpenAI only)
+- Provider badge (xAI / OpenAI) next to the language switch
+
+### Changed
+
+- Touch targets on the talk-mode and language pill switches bumped from 1.7rem to 1.8rem
+- Dock layout: talk button now sits above the typing bar with a deliberate gap to avoid mis-taps, and the whole dock sits closer to the bottom edge
+
+### Fixed
+
+- A genuine WebSocket/WebRTC transport error mid-session (as opposed to a clean close) now forces the same full reconnect as a closed connection, instead of leaving a dead client/token in place
+- Any hard connection failure now aborts an in-flight Hermes tool lookup instead of letting it finish in the background and silently fail to deliver its answer once the connection was already gone
+
 ## [0.2.0] — 2026-07-25
 
 ### Added
