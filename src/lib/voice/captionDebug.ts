@@ -32,12 +32,10 @@ export function createCaptionDebugger() {
 	const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
 	let queue: CaptionDebugEvent[] = [];
 	let flushTimer: ReturnType<typeof setTimeout> | null = null;
-	let session = `cap-${Date.now().toString(36)}`;
+	const session = `cap-${Date.now().toString(36)}`;
 
 	function nowMs() {
-		return Math.round(
-			(typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0
-		);
+		return Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0);
 	}
 
 	async function flush() {
