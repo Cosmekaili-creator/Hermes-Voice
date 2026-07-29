@@ -49,6 +49,28 @@ const CONNECT_ERROR_CODES = {
 } as const satisfies Record<string, VoiceErrorCode>;
 
 const TALK_MODE_STORAGE_KEY = 'hermes-voice.talkMode';
+/** Per-tab Hermes backend conversation ID; survives a Safari-triggered tab reload, not a new tab. */
+const VOICE_SESSION_STORAGE_KEY = 'hermes-voice.session-id';
+
+function createVoiceSessionId(): string {
+	return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+		? crypto.randomUUID()
+		: `voice-${Date.now()}`;
+}
+
+function readOrCreateVoiceSessionId(): string {
+	if (typeof sessionStorage === 'undefined') return createVoiceSessionId();
+	try {
+		const existing = sessionStorage.getItem(VOICE_SESSION_STORAGE_KEY);
+		if (existing) return existing;
+		const id = createVoiceSessionId();
+		sessionStorage.setItem(VOICE_SESSION_STORAGE_KEY, id);
+		return id;
+	} catch {
+		// Private browsing / storage failures: fall back to the original in-memory behaviour.
+		return createVoiceSessionId();
+	}
+}
 
 class VoiceAppError extends Error {
 	readonly code: VoiceErrorCode;
@@ -240,10 +262,7 @@ export function createVoiceDemo() {
 	let realtimeInFlight: Promise<RealtimeClient> | null = null;
 	let turnId = 0;
 	let destroyed = false;
-	const voiceSessionId =
-		typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-			? crypto.randomUUID()
-			: `voice-${Date.now()}`;
+	const voiceSessionId = readOrCreateVoiceSessionId();
 
 	function activeProvider(): ProviderId {
 		return token?.provider ?? 'xai';
@@ -322,11 +341,75 @@ export function createVoiceDemo() {
 		}
 	}
 
+	/** Below this, a brief desktop alt-tab shouldn't force a reconnect on a healthy connection. */
+	const BACKGROUND_SUSPECT_MS = 4000;
+	let hiddenSince: number | null = null;
+
+	/**
+	 * iOS Safari can background/suspend the tab and leave the realtime WebSocket or
+	 * RTCPeerConnection reporting itself as still open — without ever firing close/error —
+	 * so the existing onClose-driven `fail('error.connectionLost', …)` path never runs.
+	 * Re-check liveness ourselves whenever the app plausibly regained a working connection.
+	 */
+	function recoverConnection() {
+		if (destroyed) return;
+		if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+		if (isOffline()) return;
+
+		if (
+			state === 'listening' ||
+			state === 'thinking' ||
+			state === 'speaking' ||
+			handsfreeArmed ||
+			hermesBridgeActive
+		) {
+			// Same path a genuine transport close/error already takes (see onClose below) —
+			// deliberately not gated on `busy`/`hermesBridgeActive`: a stranded connection is
+			// stranded no matter which turn stage it died in, and `fail()` itself aborts any
+			// in-flight Hermes lookup that could otherwise hang until its own timeout.
+			fail('error.connectionLost', { reconnect: true });
+			return;
+		}
+
+		// Idle: `busy` here means a connect attempt (ensureRealtime/mintSession) is already
+		// racing — don't yank the client out from under it.
+		if (busy) return;
+
+		// Don't trust a possibly-zombie client's stale open/ready flags — drop it and let
+		// warm() (below) mint + connect fresh.
+		if (client) {
+			try {
+				client.close();
+			} catch {
+				/* ignore */
+			}
+			client = null;
+			token = null;
+		}
+		void warm();
+	}
+
 	const handleOnline = () => {
 		online = true;
+		// A network change is itself a strong enough signal — no debounce needed.
+		recoverConnection();
 	};
 	const handleOffline = () => {
 		online = false;
+	};
+	const handleVisibilityChange = () => {
+		if (document.visibilityState === 'hidden') {
+			hiddenSince = Date.now();
+			return;
+		}
+		const hiddenMs = hiddenSince !== null ? Date.now() - hiddenSince : 0;
+		hiddenSince = null;
+		if (hiddenMs < BACKGROUND_SUSPECT_MS) return;
+		recoverConnection();
+	};
+	/** iOS may restore a frozen/bfcache page without a normal reload — always suspect. */
+	const handlePageShow = (event: PageTransitionEvent) => {
+		if (event.persisted) recoverConnection();
 	};
 
 	function attachNetworkWatch() {
@@ -335,6 +418,8 @@ export function createVoiceDemo() {
 		online = !isOffline();
 		window.addEventListener('online', handleOnline);
 		window.addEventListener('offline', handleOffline);
+		document.addEventListener('visibilitychange', handleVisibilityChange);
+		window.addEventListener('pageshow', handlePageShow);
 	}
 
 	function detachNetworkWatch() {
@@ -342,6 +427,8 @@ export function createVoiceDemo() {
 		networkWatchAttached = false;
 		window.removeEventListener('online', handleOnline);
 		window.removeEventListener('offline', handleOffline);
+		document.removeEventListener('visibilitychange', handleVisibilityChange);
+		window.removeEventListener('pageshow', handlePageShow);
 	}
 
 	function clearCaptionFadeTimer() {
