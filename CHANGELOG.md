@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-07-29
+
 ### Added
 
 - One-time mic-permission priming notice before the first mic request, plus a "Try again" retry on mic-denied that re-requests permission without a page reload
@@ -25,6 +27,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A genuine WebSocket/WebRTC transport error mid-session (as opposed to a clean close) now forces the same full reconnect as a closed connection, instead of leaving a dead client/token in place
 - Any hard connection failure now aborts an in-flight Hermes tool lookup instead of letting it finish in the background and silently fail to deliver its answer once the connection was already gone
+- The voice model could judge a substantive request "simple enough" and answer it directly, silently bypassing Hermes Agent's memory, tools, and live context — it now delegates everything except a narrow set of lightweight exchanges (greetings, acknowledgements, repeats, plain translation) via `ask_hermes`
+- iOS Safari could leave a backgrounded tab's realtime WebSocket/RTCPeerConnection reporting itself as open while actually dead, breaking audio until a full page reload — the app now detects this on foreground/network return and reconnects; the per-tab Hermes session ID also now survives a Safari-forced tab reload
+
+## [0.3.0] — 2026-07-26
+
+### Added
+
+- Live Lounge captions: stable left-aligned lines synced to speech, soft fade of older lines, hold ~3.5s after she stops
+- Streaming Hermes wait UI: live tool activity over SSE while `ask_hermes` runs
+- OpenAI Realtime over WebRTC with `semantic_vad` hands-free (barge-in via browser AEC); xAI stays WebSocket + `server_vad`
+- CI foundations: Vitest, Playwright smoke, ESLint/Prettier, GitHub Actions gate
+
+### Changed
+
+- Hermes voice bridge prefers browser / x_search when page extract fails
+- README: Lounge screenshots
 
 ## [0.2.0] — 2026-07-25
 
@@ -62,5 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - First public release: Lazic Lounge press-to-talk UI, xAI realtime voice, Hermes `ask_hermes` bridge, URL-key auth, example systemd / nginx deploy
 
+[0.4.0]: https://github.com/Cosmekaili-creator/Hermes-Voice/compare/0.3.0...0.4.0
+[0.3.0]: https://github.com/Cosmekaili-creator/Hermes-Voice/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/Cosmekaili-creator/Hermes-Voice/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Cosmekaili-creator/Hermes-Voice/releases/tag/v0.1.0
