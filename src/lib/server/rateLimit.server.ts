@@ -74,6 +74,11 @@ export const RATE = {
 	// Dedicated bucket — a greeting retry storm must not eat the budget the real
 	// ask_hermes tool-bridge depends on.
 	greeting: { limit: 6, windowMs: 60_000 },
+	// Dedicated bucket — memory review fires at most once per hands-free conversation end;
+	// a retry storm here must not eat the ask_hermes tool-bridge budget either. The
+	// per-binding in-flight concurrency cap (routes/api/memory-review) is separate from
+	// this fixed-window request-rate bucket.
+	memoryReview: { limit: 4, windowMs: 60_000 },
 	setupProbe: { limit: 20, windowMs: 60_000 },
 	setupSave: { limit: 10, windowMs: 60_000 },
 	ownerHealth: { limit: 10, windowMs: 60_000 },

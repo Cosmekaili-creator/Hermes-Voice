@@ -16,6 +16,7 @@ import {
 import { formatHermesToolActivity, truncateSnippet } from './captionTruncate';
 import { buildGreetingResponseInstructions, buildHermesVoiceInstructions } from './instructions';
 import { PROVIDER_PCM_RATE } from './pcm';
+import { createTranscriptLog, readUserTranscriptEvent } from './transcriptLog';
 import {
 	createRealtimeClientFor,
 	handsFreeTurnDetectionFor,
@@ -303,6 +304,12 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 	let turnId = 0;
 	let destroyed = false;
 	const voiceSessionId = readOrCreateVoiceSessionId();
+	/**
+	 * Opt-in conversation memory review (see VoicePersona.reviewConversationForMemory).
+	 * Construction itself is gated on the flag — a binding that hasn't opted in allocates
+	 * nothing and every `transcript?.` call below is a guaranteed no-op.
+	 */
+	const transcript = persona.reviewConversationForMemory ? createTranscriptLog() : null;
 	/** Auto-greet: resolves to the opening line text, or null on any failure — never rejects. */
 	let greetingPrefetch: Promise<string | null> | null = null;
 	/** Turn ID of the greeting-triggered response.create, if one is in flight — see the
@@ -1168,6 +1175,17 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 	function handleServerEvent(event: RealtimeServerEvent, myTurn: number) {
 		if (destroyed || myTurn !== turnId) return;
 
+		// Opt-in memory-review transcript capture (see VoicePersona.reviewConversationForMemory).
+		// Not part of the switch below since these are matched by type *prefix*, not an exact
+		// literal — and are a no-op when the flag isn't set, same as any other unhandled event.
+		if (event.type.startsWith('conversation.item.input_audio_transcription.')) {
+			if (transcript) {
+				const parsed = readUserTranscriptEvent(event);
+				if (parsed) transcript.noteUserTranscript(parsed.key, parsed.text, parsed.mode);
+			}
+			return;
+		}
+
 		switch (event.type) {
 			case 'error': {
 				const msg = (typeof event.error?.message === 'string' && event.error.message) || '';
@@ -1260,6 +1278,7 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 			case 'response.output_audio_transcript.delta': {
 				if (typeof event.delta !== 'string' || !event.delta) return;
 				appendCaptionDelta(event.delta);
+				transcript?.appendAssistantDelta(event.delta);
 				return;
 			}
 			case 'response.output_audio.delta': {
@@ -1287,6 +1306,7 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 				// Always fade captions when this response ends (even if bridge suppressed idle).
 				const shouldSettleUi = !hermesBridgeActive && !suppressIdleForTool;
 				captionDbg.log('response_done', captionSnap({ shouldSettleUi }));
+				transcript?.commitAssistant();
 				void (async () => {
 					if (myTurn !== turnId) return;
 					if (shouldSettleUi) {
@@ -1375,7 +1395,11 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 				},
 				{
 					model: token.model || undefined,
-					voice: token.voice || undefined
+					voice: token.voice || undefined,
+					// Model id itself is resolved provider-side (each provider's own client.ts
+					// falls back to its own default transcription model) — this only signals
+					// "on" for a binding that opted in. See VoicePersona.reviewConversationForMemory.
+					inputTranscription: persona.reviewConversationForMemory ? { model: '' } : null
 				}
 			);
 
@@ -1507,6 +1531,36 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		} catch {
 			// Greeting is a nice-to-have — never let it surface an error or break the session.
 		}
+	}
+
+	/**
+	 * Opt-in conversation memory review. Fires whenever a hands-free conversation
+	 * explicitly ends (disarm, or interrupting mid-response — both are "I'm done"
+	 * gestures). Take-and-clear happens BEFORE the request is sent, so a failed or
+	 * slow request can never re-send content or let the log grow unbounded — same
+	 * "mark done immediately" discipline as the existing greeting prefetch.
+	 *
+	 * v1 limitation: push-to-talk has no equivalent "end the conversation" gesture
+	 * (its toggle() path only does per-utterance start/stop), so PTT sessions are
+	 * never reviewed. Closing the tab without an explicit stop also loses whatever
+	 * hasn't been reviewed yet — see the comment in destroy().
+	 */
+	function fireMemoryReview() {
+		if (!transcript) return;
+		transcript.commitAssistant();
+		if (!transcript.hasReviewableContent()) {
+			transcript.clear();
+			return;
+		}
+		const turns = transcript.takeTurns();
+		void fetch('/api/memory-review', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			credentials: 'same-origin',
+			body: JSON.stringify({ session_id: voiceSessionId, transcript: turns })
+		}).catch(() => {
+			/* background action — must never surface to the UI */
+		});
 	}
 
 	async function warm(): Promise<void> {
@@ -1780,6 +1834,7 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 			pulse(8);
 
 			client?.sendUserText(text);
+			transcript?.noteUserText(text);
 			client?.respond();
 
 			clearThinkTimer();
@@ -1813,6 +1868,7 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 	}
 
 	function disarmHandsfree() {
+		fireMemoryReview();
 		handsfreeArmed = false;
 		turnId += 1;
 		clearThinkTimer();
@@ -1834,6 +1890,11 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 	/** Speaking tap: stop + disarm (may clear buffer). Distinct from barge-in. */
 	function interruptSpeaking() {
 		if (state !== 'speaking') return;
+		// Tapping the talk button while the assistant is mid-response is the single most
+		// common "I'm done" gesture in hands-free — fire the same review disarmHandsfree()
+		// does. PTT shares this function for its own stop-speaking tap, which has no
+		// "end the conversation" semantics, so it's explicitly excluded here.
+		if (talkMode === 'handsfree') fireMemoryReview();
 		turnId += 1;
 		clearThinkTimer();
 		endHermesBridgeUi();
@@ -1888,6 +1949,11 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 
 	function setTalkMode(mode: TalkMode) {
 		if (!isTalkMode(mode) || mode === talkMode) return;
+
+		// A mode switch abandons the in-progress conversation for review purposes — it is
+		// not one of the explicit "I'm done" gestures fireMemoryReview() hooks, so this is
+		// a plain discard, not a review trigger.
+		transcript?.clear();
 
 		turnId += 1;
 		clearThinkTimer();
@@ -1952,6 +2018,14 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		realtimeInFlight = null;
 		greetingPrefetch = null;
 		greetingTurnId = null;
+		// Deliberate, documented v1 limitation, not an oversight: closing the tab or
+		// navigating away without using the in-app "stop" gesture (disarmHandsfree /
+		// interruptSpeaking, see fireMemoryReview()) loses that segment's transcript —
+		// there is no unload-time review here. A future iteration could explore
+		// navigator.sendBeacon on unload, but that's explicitly out of scope for v1:
+		// unreliable delivery, payload-size constraints, and the added complexity
+		// isn't justified yet.
+		transcript?.clear();
 		capture?.stop();
 		capture?.destroy();
 		capture = null;

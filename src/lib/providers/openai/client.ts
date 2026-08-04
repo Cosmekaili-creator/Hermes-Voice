@@ -1,6 +1,7 @@
 import { VOICE_TOOLS } from '$lib/voice/tools';
 import { userTextItem } from '../items';
 import type {
+	InputTranscription,
 	RealtimeClient,
 	RealtimeClientHandlers,
 	RealtimeClientOptions,
@@ -8,7 +9,12 @@ import type {
 	RealtimeServerEvent,
 	WireTurnDetection
 } from '../types';
-import { DEFAULT_MODEL, DEFAULT_VOICE, REALTIME_CALLS_URL } from './constants';
+import {
+	DEFAULT_INPUT_TRANSCRIPTION_MODEL,
+	DEFAULT_MODEL,
+	DEFAULT_VOICE,
+	REALTIME_CALLS_URL
+} from './constants';
 
 export type {
 	RealtimeClient,
@@ -57,6 +63,7 @@ export function createRealtimeClient(
 	let cachedTurnDetection: WireTurnDetection = null;
 	const model = options.model?.trim() || DEFAULT_MODEL;
 	const voice = options.voice?.trim() || DEFAULT_VOICE;
+	const inputTranscription: InputTranscription | null = options.inputTranscription ?? null;
 
 	function sessionUpdatePayload() {
 		return {
@@ -69,7 +76,22 @@ export function createRealtimeClient(
 				tools: [...VOICE_TOOLS],
 				audio: {
 					input: {
-						turn_detection: cachedTurnDetection
+						turn_detection: cachedTurnDetection,
+						// Conditional: flag off (inputTranscription null) must produce a byte-identical
+						// payload to before this feature existed — see VoicePersona.reviewConversationForMemory.
+						// Schema not fully verified against OpenAI's actual realtime docs for this field;
+						// if it doesn't work perfectly, the feature simply degrades to an assistant-only
+						// transcript on OpenAI rather than breaking the session — not over-engineered further.
+						...(inputTranscription
+							? {
+									transcription: {
+										model: inputTranscription.model || DEFAULT_INPUT_TRANSCRIPTION_MODEL,
+										...(inputTranscription.languageHint
+											? { language: inputTranscription.languageHint }
+											: {})
+									}
+								}
+							: {})
 					},
 					output: {
 						voice

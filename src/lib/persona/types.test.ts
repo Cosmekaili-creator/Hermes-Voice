@@ -27,7 +27,8 @@ describe('normalizePersona', () => {
 			patientSilence: 1,
 			autoGreet: 'true',
 			handsFreeSilenceMs: 'abc',
-			defaultTalkMode: 'sometimes'
+			defaultTalkMode: 'sometimes',
+			reviewConversationForMemory: 'yes'
 		});
 		expect(result).toEqual(DEFAULT_PERSONA);
 	});
@@ -40,7 +41,8 @@ describe('normalizePersona', () => {
 			patientSilence: true,
 			autoGreet: true,
 			handsFreeSilenceMs: 4500,
-			defaultTalkMode: 'handsfree'
+			defaultTalkMode: 'handsfree',
+			reviewConversationForMemory: true
 		});
 		expect(result).toEqual({
 			assistantName: 'Nova',
@@ -49,7 +51,26 @@ describe('normalizePersona', () => {
 			patientSilence: true,
 			autoGreet: true,
 			handsFreeSilenceMs: 4500,
-			defaultTalkMode: 'handsfree'
+			defaultTalkMode: 'handsfree',
+			reviewConversationForMemory: true
+		});
+	});
+
+	describe('reviewConversationForMemory', () => {
+		it('defaults to false when absent', () => {
+			expect(normalizePersona({}).reviewConversationForMemory).toBe(false);
+		});
+
+		it('accepts an explicit true', () => {
+			expect(
+				normalizePersona({ reviewConversationForMemory: true }).reviewConversationForMemory
+			).toBe(true);
+		});
+
+		it('falls back to false for a non-boolean value', () => {
+			expect(
+				normalizePersona({ reviewConversationForMemory: 'true' }).reviewConversationForMemory
+			).toBe(false);
 		});
 	});
 

@@ -2,13 +2,19 @@ import { VOICE_TOOLS } from '$lib/voice/tools';
 import { userTextItem } from '../items';
 import { PCM_RATE } from '../pcm';
 import type {
+	InputTranscription,
 	RealtimeClient,
 	RealtimeClientHandlers,
 	RealtimeClientOptions,
 	RealtimeServerEvent,
 	WireTurnDetection
 } from '../types';
-import { DEFAULT_MODEL, DEFAULT_VOICE, realtimeUrl } from './constants';
+import {
+	DEFAULT_INPUT_TRANSCRIPTION_MODEL,
+	DEFAULT_MODEL,
+	DEFAULT_VOICE,
+	realtimeUrl
+} from './constants';
 
 export type {
 	RealtimeClient,
@@ -37,6 +43,7 @@ export function createRealtimeClient(
 	let cachedTurnDetection: WireTurnDetection = null;
 	const model = options.model?.trim() || DEFAULT_MODEL;
 	const voice = options.voice?.trim() || DEFAULT_VOICE;
+	const inputTranscription: InputTranscription | null = options.inputTranscription ?? null;
 
 	function sessionUpdatePayload() {
 		return {
@@ -48,7 +55,21 @@ export function createRealtimeClient(
 				turn_detection: cachedTurnDetection,
 				tools: [...VOICE_TOOLS],
 				audio: {
-					input: { format: { type: 'audio/pcm', rate: PCM_RATE } },
+					input: {
+						format: { type: 'audio/pcm', rate: PCM_RATE },
+						// Conditional: flag off (inputTranscription null) must produce a byte-identical
+						// payload to before this feature existed — see VoicePersona.reviewConversationForMemory.
+						...(inputTranscription
+							? {
+									transcription: {
+										model: inputTranscription.model || DEFAULT_INPUT_TRANSCRIPTION_MODEL,
+										...(inputTranscription.languageHint
+											? { language_hint: inputTranscription.languageHint }
+											: {})
+									}
+								}
+							: {})
+					},
 					output: { format: { type: 'audio/pcm', rate: PCM_RATE } }
 				}
 			}

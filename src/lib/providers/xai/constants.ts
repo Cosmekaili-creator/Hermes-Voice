@@ -5,6 +5,9 @@ export { PCM_RATE } from '../pcm';
 export const DEFAULT_MODEL = 'grok-voice-latest';
 export const DEFAULT_VOICE = 'eve';
 
+/** Opt-in user-side transcription model (see VoicePersona.reviewConversationForMemory). */
+export const DEFAULT_INPUT_TRANSCRIPTION_MODEL = 'grok-transcribe';
+
 export const CLIENT_SECRETS_URL = 'https://api.x.ai/v1/realtime/client_secrets';
 export const DEFAULT_TTL_SECONDS = 300;
 

@@ -12,6 +12,14 @@ export type VoicePersona = {
 	autoGreet: boolean;
 	handsFreeSilenceMs: number;
 	defaultTalkMode: 'ptt' | 'handsfree' | null;
+	/**
+	 * Opt-in conversation memory review. When true: requests user-side speech
+	 * transcription from the realtime provider, keeps a bounded client-side transcript
+	 * of both sides of a hands-free conversation, and posts it to this binding's own
+	 * Hermes backend for a dedicated memory-extraction pass when the conversation is
+	 * explicitly ended. Default false — fully inert, zero behavioral change, when unset.
+	 */
+	reviewConversationForMemory: boolean;
 };
 
 export const DEFAULT_ASSISTANT_NAME = 'Hermes';
@@ -23,7 +31,8 @@ export const DEFAULT_PERSONA: VoicePersona = {
 	patientSilence: false,
 	autoGreet: false,
 	handsFreeSilenceMs: 1200,
-	defaultTalkMode: null
+	defaultTalkMode: null,
+	reviewConversationForMemory: false
 };
 
 export const MIN_HANDS_FREE_SILENCE_MS = 400;
@@ -68,6 +77,10 @@ export function normalizePersona(raw: unknown): VoicePersona {
 			o.handsFreeSilenceMs,
 			DEFAULT_PERSONA.handsFreeSilenceMs
 		),
-		defaultTalkMode: normalizeTalkMode(o.defaultTalkMode)
+		defaultTalkMode: normalizeTalkMode(o.defaultTalkMode),
+		reviewConversationForMemory: normalizeBool(
+			o.reviewConversationForMemory,
+			DEFAULT_PERSONA.reviewConversationForMemory
+		)
 	};
 }

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in per-binding conversation memory review: when a deployer enables it for a binding, both sides of a hands-free conversation are transcribed and, when the conversation is explicitly ended, posted to that binding's own Hermes backend with a dedicated instruction to review and save what's worth remembering — instead of relying solely on the realtime model's own paraphrased judgment calls mid-conversation
+
 ## [0.4.0] — 2026-07-29
 
 ### Added

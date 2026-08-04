@@ -41,6 +41,25 @@ With `MULTI_USER=1`:
 
 systemd `ProtectSystem=strict` needs `ReadWritePaths=` covering both `.env` and `data/` — see `deploy/hermes-voice.service`. Compose examples: `deploy/docker-compose.yml` (Voice) + [OPS.md](OPS.md) (networking / SSRF allowlist — Compose service DNS names are not allowed as `HERMES_API_BASE`).
 
+### Conversation memory review (opt-in, per binding)
+
+`reviewConversationForMemory` (boolean, default `false`) is a `VoicePersona` field set by hand-editing a binding row in `data/bindings.json` — there is no UI toggle for it. Like `autoGreet`, it is multi-user-only: single-user (env) mode always uses `DEFAULT_PERSONA`, so this can only ever be enabled via a `MULTI_USER=1` bindings row.
+
+When enabled for a binding:
+
+- The realtime provider is asked to transcribe the user's side of the conversation too (not just the assistant's), which adds provider speech-to-text cost on top of the realtime voice session itself.
+- The app keeps a bounded, session-only transcript of both sides of a hands-free conversation.
+- When the user explicitly ends a hands-free conversation (disarming hands-free, or interrupting the assistant mid-response — both read as "I'm done"), the accumulated transcript is posted to that binding's own Hermes backend with a dedicated instruction to review it and save, via the memory tool, anything worth remembering long-term. The reply is discarded; nothing from this pass is shown in the UI.
+
+**Privacy note:** enabling this is a materially different data posture than the default. Normally only a paraphrase the voice model chooses to forward ever reaches Hermes. With this flag on, the user's verbatim spoken words are transcribed by the realtime provider and their raw content is sent to the deployer's own Hermes backend and persisted in long-term memory. Deployers enabling this for a binding are responsible for informing that binding's user about it.
+
+**v1 limitations:**
+
+- Hands-free only — push-to-talk has no equivalent "end the conversation" gesture, so PTT sessions are never reviewed. Note that user-side transcription is still requested for the whole session whenever the flag is on, even in push-to-talk where it can never lead to a review — factor this into the cost/privacy tradeoff above.
+- Multi-user mode only (see above).
+- A conversation abandoned without the in-app stop gesture (e.g. the tab is closed or navigated away from, or the session ends via an error path) is not reviewed — there is no unload-time beacon in v1.
+- **Untested against OpenAI's realtime API in v1.** The xAI request shape (`session.audio.input.transcription`) is documented and used as-is; the equivalent has not been verified live against OpenAI's realtime session config. If OpenAI rejects an unrecognized field rather than ignoring it, enabling this flag on an OpenAI-provider binding could break the session rather than degrade gracefully — smoke-test on your own deployment before relying on this with `VOICE_PROVIDER=openai`.
+
 ## First-run setup wizard
 
 | Mode       | Condition                                    | Behavior                                                                          |

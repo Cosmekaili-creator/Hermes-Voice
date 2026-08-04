@@ -9,7 +9,8 @@ const NOVA_PERSONA: VoicePersona = {
 	patientSilence: true,
 	autoGreet: true,
 	handsFreeSilenceMs: 4500,
-	defaultTalkMode: 'handsfree'
+	defaultTalkMode: 'handsfree',
+	reviewConversationForMemory: false
 };
 
 const DEFAULT_GOLDEN_INSTRUCTIONS =

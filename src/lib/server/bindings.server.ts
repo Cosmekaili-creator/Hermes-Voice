@@ -100,7 +100,8 @@ export function redactBinding(b: Binding): RedactedBinding {
 		patientSilence: b.patientSilence,
 		autoGreet: b.autoGreet,
 		handsFreeSilenceMs: b.handsFreeSilenceMs,
-		defaultTalkMode: b.defaultTalkMode
+		defaultTalkMode: b.defaultTalkMode,
+		reviewConversationForMemory: b.reviewConversationForMemory
 	};
 }
 
@@ -113,7 +114,8 @@ export function personaFromBinding(b: Binding): VoicePersona {
 		patientSilence: b.patientSilence,
 		autoGreet: b.autoGreet,
 		handsFreeSilenceMs: b.handsFreeSilenceMs,
-		defaultTalkMode: b.defaultTalkMode
+		defaultTalkMode: b.defaultTalkMode,
+		reviewConversationForMemory: b.reviewConversationForMemory
 	};
 }
 

@@ -122,9 +122,23 @@ export type RealtimeClientHandlers = {
 	onRemoteStream?: (stream: MediaStream) => void;
 };
 
+/**
+ * Requests user-side speech-to-text from the realtime provider (opt-in memory-review
+ * feature — see VoicePersona.reviewConversationForMemory). `languageHint` is wired
+ * through but deliberately left unset by every current caller: the app's design mirrors
+ * the user's spoken language rather than pinning it from the UI locale, and forcing a
+ * hint here would fight that. Left in place for a future caller that wants it.
+ */
+export type InputTranscription = {
+	model: string;
+	languageHint?: string;
+};
+
 export type RealtimeClientOptions = {
 	model?: string;
 	voice?: string;
+	/** Omit/null → no transcription requested, byte-identical session payload to today. */
+	inputTranscription?: InputTranscription | null;
 };
 
 /** Optional mic stream for WebRTC connect (shared with Lounge capture). */
