@@ -1,7 +1,8 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { fly } from 'svelte/transition';
-	import { getLocale, t } from '$lib/i18n';
+	import { getLocale, t, type MessageKey } from '$lib/i18n';
+	import { DEFAULT_PERSONA, type VoicePersona } from '$lib/persona/types';
 	import type { ProviderId } from '$lib/providers/types';
 	import { createVoiceDemo } from '$lib/voice/voiceDemo';
 	import { markMicPrimed, shouldPrimeMic } from '$lib/voice/micPrimer';
@@ -17,8 +18,23 @@
 		openai: 'OpenAI'
 	};
 
+	let { persona = DEFAULT_PERSONA }: { persona?: VoicePersona } = $props();
+
+	/**
+	 * Explicit third arg on every t() call in this component (and inline child components
+	 * that call t() with an {assistant}-bearing key) — guarantees correct SSR output with
+	 * no default→custom-name flash. setAssistantName()/getAssistantName() (called from
+	 * +layout.svelte) remain the ambient fallback for anything that calls t() without an
+	 * explicit override.
+	 */
+	function pt(key: MessageKey): string {
+		return t(key, getLocale(), persona.assistantName);
+	}
+
 	// Auth is cookie-only: SSR grants HttpOnly session from valid ?k=; SPA never retains the key.
-	const demo = createVoiceDemo();
+	// persona is tied to the authenticated binding for the life of this component (a change
+	// implies a different session entirely) — read once intentionally, not reactively.
+	const demo = createVoiceDemo({ persona: untrack(() => persona) });
 	const wakeLock = createScreenWakeLock();
 	/** Must match AnalyserNode.frequencyBinCount for fftSize 512 (not fftSize itself). */
 	const freqBuf = new Uint8Array(256);
@@ -51,20 +67,20 @@
 
 	const buttonLabel = $derived.by(() => {
 		if (demo.isHermesWorking) {
-			return demo.cancelArmed ? t('button.cancelArm') : t('button.cancel');
+			return demo.cancelArmed ? pt('button.cancelArm') : pt('button.cancel');
 		}
 		const handsfree = demo.talkMode === 'handsfree';
 		switch (demo.state) {
 			case 'idle':
-				if (demo.busy) return t('button.connecting');
-				if (demo.needsReconnect) return t('button.reconnect');
-				return handsfree ? t('button.armHandsfree') : t('button.pressToTalk');
+				if (demo.busy) return pt('button.connecting');
+				if (demo.needsReconnect) return pt('button.reconnect');
+				return handsfree ? pt('button.armHandsfree') : pt('button.pressToTalk');
 			case 'listening':
-				return handsfree ? t('button.disarmHandsfree') : t('button.finishSpeaking');
+				return handsfree ? pt('button.disarmHandsfree') : pt('button.finishSpeaking');
 			case 'thinking':
-				return t('button.hermesThinking');
+				return pt('button.hermesThinking');
 			case 'speaking':
-				return t('button.stopHermes');
+				return pt('button.stopHermes');
 		}
 	});
 
@@ -237,7 +253,7 @@
 	<div class="locale-corner">
 		{#if demo.provider}
 			<p class="provider-badge">
-				<span class="provider-badge__label">{t('meta.provider')}: </span>{PROVIDER_LABELS[
+				<span class="provider-badge__label">{pt('meta.provider')}: </span>{PROVIDER_LABELS[
 					demo.provider
 				]}
 			</p>
@@ -250,7 +266,7 @@
 			class="captions"
 			class:captions--fade={demo.captionPhase === 'fading'}
 			aria-live="off"
-			aria-label={t('status.captions')}
+			aria-label={pt('status.captions')}
 			bind:this={captionsEl}
 			onscroll={onCaptionScroll}
 		>
@@ -271,17 +287,17 @@
 	{/if}
 
 	<div class="center">
-		<p class="brand">HERMES</p>
+		<p class="brand">{persona.assistantName.toUpperCase()}</p>
 		<p class="status" aria-live="polite">{demo.statusLabel}</p>
 		{#if demo.statusKey === 'error.micDenied'}
 			<button type="button" class="retry" onclick={() => demo.retryMic()}
-				>{t('button.retryMic')}</button
+				>{pt('button.retryMic')}</button
 			>
 		{/if}
 		{#if demo.talkMode === 'handsfree' && demo.state === 'speaking'}
 			<p class="mic-chip" class:mic-chip--live={demo.micLive} aria-live="off">
 				<span class="mic-chip__dot" aria-hidden="true"></span>
-				{demo.micLive ? t('status.micLive') : t('status.micMuted')}
+				{demo.micLive ? pt('status.micLive') : pt('status.micMuted')}
 			</p>
 		{/if}
 		{#if demo.hermesWaitActivity}
@@ -294,7 +310,7 @@
 
 	<div class="dock">
 		{#if showMicPrimer}
-			<MicPrimer onDismiss={dismissPrimer} />
+			<MicPrimer onDismiss={dismissPrimer} assistantName={persona.assistantName} />
 		{/if}
 
 		<button
@@ -313,7 +329,11 @@
 			<span>{buttonLabel}</span>
 		</button>
 
-		<TextComposer enabled={demo.canSendText} onSend={(text) => demo.sendText(text)} />
+		<TextComposer
+			enabled={demo.canSendText}
+			onSend={(text) => demo.sendText(text)}
+			assistantName={persona.assistantName}
+		/>
 	</div>
 </div>
 

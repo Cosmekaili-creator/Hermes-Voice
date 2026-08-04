@@ -71,6 +71,9 @@ export const RATE = {
 	unlock: { limit: 5, windowMs: 15 * 60_000 },
 	mint: { limit: 30, windowMs: 60_000 },
 	hermes: { limit: 20, windowMs: 60_000 },
+	// Dedicated bucket — a greeting retry storm must not eat the budget the real
+	// ask_hermes tool-bridge depends on.
+	greeting: { limit: 6, windowMs: 60_000 },
 	setupProbe: { limit: 20, windowMs: 60_000 },
 	setupSave: { limit: 10, windowMs: 60_000 },
 	ownerHealth: { limit: 10, windowMs: 60_000 },

@@ -10,6 +10,7 @@ declare global {
 				id: string;
 				role: 'owner' | 'user';
 				label: string;
+				persona: import('$lib/persona/types').VoicePersona;
 			} | null;
 		}
 		// interface PageData {}

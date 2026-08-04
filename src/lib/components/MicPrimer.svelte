@@ -1,12 +1,12 @@
 <script lang="ts">
-	import { t } from '$lib/i18n';
+	import { getLocale, t } from '$lib/i18n';
 
-	let { onDismiss }: { onDismiss: () => void } = $props();
+	let { onDismiss, assistantName }: { onDismiss: () => void; assistantName: string } = $props();
 </script>
 
 <div class="primer" role="status">
 	<p class="primer__title">{t('mic.primerTitle')}</p>
-	<p class="primer__body">{t('mic.primerBody')}</p>
+	<p class="primer__body">{t('mic.primerBody', getLocale(), assistantName)}</p>
 	<button type="button" class="primer__btn" onclick={onDismiss}>{t('mic.primerDismiss')}</button>
 </div>
 

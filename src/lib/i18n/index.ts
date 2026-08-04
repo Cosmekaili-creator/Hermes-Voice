@@ -9,6 +9,8 @@ export {
 	resolveInitial,
 	initLocale,
 	syncLocale,
+	setAssistantName,
+	getAssistantName,
 	LOCALE_COOKIE,
 	LOCALE_STORAGE_KEY
 } from './locale.svelte.js';

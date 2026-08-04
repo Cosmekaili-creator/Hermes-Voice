@@ -1,7 +1,7 @@
 import type { Messages } from './types';
 
 export const fr = {
-	'meta.title': 'Hermes Voice',
+	'meta.title': '{assistant} Voice',
 	'meta.language': 'Langue',
 	'meta.talkMode': 'Mode de parole',
 	'meta.provider': 'Fournisseur vocal',
@@ -14,23 +14,23 @@ export const fr = {
 	'status.listening': 'Écoute… appuyez à nouveau quand vous avez fini',
 	'status.listeningHandsfree': 'Écoute… appuyez pour arrêter',
 	'status.thinking': 'Un instant…',
-	'status.hermesWorking': 'Hermes travaille…',
+	'status.hermesWorking': '{assistant} travaille…',
 	'status.hermesStill': 'Toujours en cours…',
 	'status.hermesAlmost': 'Presque terminé…',
 	'status.captions': 'Sous-titres en direct',
-	'status.speaking': 'Hermes parle…',
+	'status.speaking': '{assistant} parle…',
 	'status.connecting': 'Connexion…',
 	'status.cancelArm': 'Appuyez encore pour annuler',
 	'status.cancelled': 'Annulé',
 	'status.micLive': 'Micro actif — parlez pour interrompre',
-	'status.micMuted': 'Micro coupé pendant qu’Hermes parle',
+	'status.micMuted': 'Micro coupé — {assistant} parle',
 
 	'button.pressToTalk': 'Appuyez pour parler',
 	'button.armHandsfree': 'Appuyez pour écouter',
 	'button.finishSpeaking': 'Terminer',
 	'button.disarmHandsfree': 'Arrêter l’écoute',
-	'button.stopHermes': 'Arrêter Hermes',
-	'button.hermesThinking': 'Hermes réfléchit',
+	'button.stopHermes': 'Arrêter {assistant}',
+	'button.hermesThinking': '{assistant} réfléchit',
 	'button.cancel': 'Annuler',
 	'button.cancelArm': 'Appuyez encore pour annuler',
 	'button.connecting': 'Connexion…',
@@ -39,10 +39,10 @@ export const fr = {
 
 	'mic.primerTitle': 'Accès au micro',
 	'mic.primerBody':
-		'Hermes a besoin de votre micro pour vous entendre. Votre navigateur demandera l’autorisation la première fois que vous appuierez pour parler.',
+		'{assistant} a besoin de votre micro pour vous entendre. Votre navigateur demandera l’autorisation la première fois que vous appuierez pour parler.',
 	'mic.primerDismiss': 'Compris',
 
-	'compose.label': 'Écrire un message à Hermes',
+	'compose.label': 'Écrire un message à {assistant}',
 	'compose.placeholder': 'Écrire plutôt…',
 	'compose.send': 'Envoyer',
 
@@ -60,14 +60,14 @@ export const fr = {
 	'error.sdpExchangeFailed': 'Échec de l’échange SDP de la session vocale',
 	'error.connectionLost': 'Connexion perdue — appuyez pour reconnecter',
 	'error.noReply': 'Pas de réponse — réessayez',
-	'error.couldNotContinue': 'Impossible de continuer après Hermes',
-	'error.hermesTimeout': 'Hermes a pris trop de temps — réessayez',
+	'error.couldNotContinue': 'Impossible de continuer après {assistant}',
+	'error.hermesTimeout': '{assistant} a pris trop de temps — réessayez',
 	'error.voiceToolError': 'Erreur de l’outil vocal',
 	'error.voiceError': 'Erreur vocale',
 	'error.couldNotSendAudio': 'Impossible d’envoyer l’audio',
 	'error.realtimeSessionError': 'Erreur de session temps réel',
 	'error.offline': 'Vous êtes hors ligne — vérifiez votre connexion',
-	'error.networkFailed': 'Erreur réseau — Hermes Voice injoignable',
+	'error.networkFailed': 'Erreur réseau — {assistant} Voice injoignable',
 	'error.sessionForbidden': 'Session refusée — rechargez la page',
 	'error.sessionRateLimited': 'Trop de tentatives — patientez un instant',
 

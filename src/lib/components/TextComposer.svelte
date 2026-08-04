@@ -1,7 +1,11 @@
 <script lang="ts">
-	import { t } from '$lib/i18n';
+	import { getLocale, t } from '$lib/i18n';
 
-	let { enabled, onSend }: { enabled: boolean; onSend: (text: string) => void } = $props();
+	let {
+		enabled,
+		onSend,
+		assistantName
+	}: { enabled: boolean; onSend: (text: string) => void; assistantName: string } = $props();
 
 	let draft = $state('');
 
@@ -25,7 +29,7 @@
 		enterkeyhint="send"
 		maxlength="500"
 		placeholder={t('compose.placeholder')}
-		aria-label={t('compose.label')}
+		aria-label={t('compose.label', getLocale(), assistantName)}
 		disabled={!enabled}
 		bind:value={draft}
 	/>

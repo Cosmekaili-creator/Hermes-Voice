@@ -1,5 +1,6 @@
 import { pulse } from '$lib/haptics';
 import { getLocale, t, type MessageKey, type VoiceErrorCode } from '$lib/i18n';
+import { DEFAULT_PERSONA, type VoicePersona } from '$lib/persona/types';
 import { CAPABILITY_MATRIX } from '$lib/providers/matrix';
 import type { ProviderId } from '$lib/providers/types';
 import { createMicCapture, type CaptureHandle } from './audioCapture';
@@ -13,7 +14,7 @@ import {
 	type CaptionLineView
 } from './captionLines';
 import { formatHermesToolActivity, truncateSnippet } from './captionTruncate';
-import { buildHermesVoiceInstructions } from './instructions';
+import { buildGreetingResponseInstructions, buildHermesVoiceInstructions } from './instructions';
 import { PROVIDER_PCM_RATE } from './pcm';
 import {
 	createRealtimeClientFor,
@@ -51,6 +52,8 @@ const CONNECT_ERROR_CODES = {
 const TALK_MODE_STORAGE_KEY = 'hermes-voice.talkMode';
 /** Per-tab Hermes backend conversation ID; survives a Safari-triggered tab reload, not a new tab. */
 const VOICE_SESSION_STORAGE_KEY = 'hermes-voice.session-id';
+/** Per-tab "already greeted" flag — one auto-greet attempt per tab session, no retry. */
+const GREETED_SESSION_STORAGE_KEY = 'hermes-voice.greeted';
 
 function createVoiceSessionId(): string {
 	return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -101,6 +104,8 @@ const CANCEL_ARM_MS = 900;
 const WAIT_TICK_MS = 1000;
 const WAIT_PHRASE_EVERY_TICKS = 4;
 const WARM_RECHECK_MS = 60_000;
+/** Auto-greet: how long to wait for the prefetched opening line before giving up silently. */
+const GREET_WAIT_MS = 12_000;
 
 type MintResult = {
 	value: string;
@@ -124,13 +129,19 @@ function isBenignCancelError(message: string): boolean {
 	return m.includes('no active response') || m.includes('cancellation failed');
 }
 
-function readStoredTalkMode(): TalkMode {
-	if (typeof localStorage === 'undefined') return 'ptt';
+/**
+ * `fallback` seeds the very first session on this browser (no stored preference yet).
+ * A persona's `defaultTalkMode` is passed as the fallback so a binding can start its
+ * users in hands-free mode by default — once the user has an explicit stored
+ * preference (their own toggle), that always wins on every later load.
+ */
+function readStoredTalkMode(fallback: TalkMode): TalkMode {
+	if (typeof localStorage === 'undefined') return fallback;
 	try {
 		const stored = localStorage.getItem(TALK_MODE_STORAGE_KEY);
-		return isTalkMode(stored) ? stored : 'ptt';
+		return isTalkMode(stored) ? stored : fallback;
 	} catch {
-		return 'ptt';
+		return fallback;
 	}
 }
 
@@ -138,6 +149,24 @@ function writeStoredTalkMode(mode: TalkMode): void {
 	if (typeof localStorage === 'undefined') return;
 	try {
 		localStorage.setItem(TALK_MODE_STORAGE_KEY, mode);
+	} catch {
+		/* ignore */
+	}
+}
+
+function hasGreetedThisSession(): boolean {
+	if (typeof sessionStorage === 'undefined') return false;
+	try {
+		return sessionStorage.getItem(GREETED_SESSION_STORAGE_KEY) === '1';
+	} catch {
+		return false;
+	}
+}
+
+function markGreetedThisSession(): void {
+	if (typeof sessionStorage === 'undefined') return;
+	try {
+		sessionStorage.setItem(GREETED_SESSION_STORAGE_KEY, '1');
 	} catch {
 		/* ignore */
 	}
@@ -164,14 +193,16 @@ function quarantineHermesToolOutput(raw: string): string {
  * Real voice session orchestrator.
  * Auth: HttpOnly cookie only — do not pass raw voice keys into the SPA.
  */
-export function createVoiceDemo() {
+export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
+	const persona = opts.persona ?? DEFAULT_PERSONA;
+
 	let state = $state<VoiceDemoState>('idle');
 	let statusOverride = $state<StatusOverride>(null);
 	let busy = $state(false);
 	let needsReconnect = $state(false);
 	let hermesBridgeActive = $state(false);
 	let cancelArmed = $state(false);
-	let talkMode = $state<TalkMode>(readStoredTalkMode());
+	let talkMode = $state<TalkMode>(readStoredTalkMode(persona.defaultTalkMode ?? 'ptt'));
 	/** Browser online/offline hint. Display-only — never gates start/stop. */
 	let online = $state(true);
 	let networkWatchAttached = false;
@@ -211,21 +242,30 @@ export function createVoiceDemo() {
 	const captionDbg = createCaptionDebugger();
 	let captionRevealTicks = 0;
 
+	// Explicit third arg on every call — SSR must render the correct persona name on first
+	// paint, whatever it's configured to; see the M1 SSR-flash fix in LazicLounge.svelte's
+	// pt() helper.
 	const statusLabel = $derived.by(() => {
-		if (!online) return t('error.offline');
+		const loc = getLocale();
+		const name = persona.assistantName;
+		if (!online) return t('error.offline', loc, name);
 		if (statusOverride?.kind === 'raw') return statusOverride.text;
-		if (statusOverride?.kind === 'key') return t(statusOverride.key);
-		if (busy && state === 'idle') return t('status.connecting');
-		if (hermesBridgeActive && state === 'thinking') return t('status.hermesWorking');
+		if (statusOverride?.kind === 'key') return t(statusOverride.key, loc, name);
+		if (busy && state === 'idle') return t('status.connecting', loc, name);
+		if (hermesBridgeActive && state === 'thinking') return t('status.hermesWorking', loc, name);
 		switch (state) {
 			case 'idle':
-				return talkMode === 'handsfree' ? t('status.idleHandsfree') : t('status.idle');
+				return talkMode === 'handsfree'
+					? t('status.idleHandsfree', loc, name)
+					: t('status.idle', loc, name);
 			case 'listening':
-				return talkMode === 'handsfree' ? t('status.listeningHandsfree') : t('status.listening');
+				return talkMode === 'handsfree'
+					? t('status.listeningHandsfree', loc, name)
+					: t('status.listening', loc, name);
 			case 'thinking':
-				return t('status.thinking');
+				return t('status.thinking', loc, name);
 			case 'speaking':
-				return t('status.speaking');
+				return t('status.speaking', loc, name);
 		}
 	});
 
@@ -263,13 +303,25 @@ export function createVoiceDemo() {
 	let turnId = 0;
 	let destroyed = false;
 	const voiceSessionId = readOrCreateVoiceSessionId();
+	/** Auto-greet: resolves to the opening line text, or null on any failure — never rejects. */
+	let greetingPrefetch: Promise<string | null> | null = null;
+	/** Turn ID of the greeting-triggered response.create, if one is in flight — see the
+	 * 'error' case in handleServerEvent(): a provider error on this specific turn must
+	 * never surface a banner or break the session (greeting is a nice-to-have). */
+	let greetingTurnId: number | null = null;
+	/** True while the user has an in-flight utterance (speech_started seen, no speech_stopped
+	 * yet), independent of `state` — on xAI, `state` stays 'listening' for the whole utterance,
+	 * so consumeGreeting() needs this to avoid talking over a user who's already mid-sentence. */
+	let userSpeechActive = false;
 
 	function activeProvider(): ProviderId {
 		return token?.provider ?? 'xai';
 	}
 
 	function turnDetectionForMode(mode: TalkMode = talkMode): TurnDetection {
-		return mode === 'handsfree' ? handsFreeTurnDetectionFor(activeProvider()) : null;
+		return mode === 'handsfree'
+			? handsFreeTurnDetectionFor(activeProvider(), { silenceMs: persona.handsFreeSilenceMs })
+			: null;
 	}
 
 	/**
@@ -1121,11 +1173,29 @@ export function createVoiceDemo() {
 				const msg = (typeof event.error?.message === 'string' && event.error.message) || '';
 				// Idle response.cancel (mode switch / disarm) — ignore, do not tear down UI.
 				if (msg && isBenignCancelError(msg)) return;
+				// Greeting-triggered response failed — a nice-to-have, never a hard failure.
+				// Log quietly and fall back to normal listening; never surface an error banner.
+				if (greetingTurnId !== null && myTurn === greetingTurnId) {
+					console.warn('Hermes Voice: auto-greet response failed, continuing silently');
+					greetingTurnId = null;
+					clearThinkTimer();
+					busy = false;
+					suppressIdleForTool = false;
+					if (handsfreeArmed && talkMode === 'handsfree' && client?.ready) {
+						void rearmListening();
+					} else {
+						setIdle();
+					}
+					return;
+				}
 				if (msg) failRaw(msg);
 				else fail('error.voiceError');
 				return;
 			}
 			case 'input_audio_buffer.speech_started': {
+				// Track regardless of provider/barge-in support — consumeGreeting() relies on
+				// this even when the barge-in early-return below skips everything else.
+				userSpeechActive = true;
 				// OpenAI WebRTC: server interrupt_response cancels the model; we only stop local audio.
 				// xAI: no voice barge-in (echo) — tap interrupts instead.
 				if (!client?.supportsBargeIn || hermesBridgeActive) return;
@@ -1142,6 +1212,7 @@ export function createVoiceDemo() {
 				return;
 			}
 			case 'input_audio_buffer.speech_stopped': {
+				userSpeechActive = false;
 				if (talkMode !== 'handsfree' || !handsfreeArmed) return;
 				if (state !== 'listening') return;
 				// Server VAD commits + responds — never client commitAndRespond.
@@ -1209,6 +1280,10 @@ export function createVoiceDemo() {
 				return;
 			}
 			case 'response.done': {
+				// Success path for the greeting turn (the 'error' case above handles the
+				// failure path) — clear structurally rather than relying on the next turnId
+				// bump to make a stale value harmless.
+				if (greetingTurnId !== null && myTurn === greetingTurnId) greetingTurnId = null;
 				// Always fade captions when this response ends (even if bridge suppressed idle).
 				const shouldSettleUi = !hermesBridgeActive && !suppressIdleForTool;
 				captionDbg.log('response_done', captionSnap({ shouldSettleUi }));
@@ -1305,7 +1380,7 @@ export function createVoiceDemo() {
 			);
 
 			try {
-				const instructions = buildHermesVoiceInstructions(getLocale());
+				const instructions = buildHermesVoiceInstructions(getLocale(), persona);
 				const vad = turnDetectionForMode();
 				if (rt.usesMediaTracks) {
 					const ctx = await ensureAudio();
@@ -1335,7 +1410,107 @@ export function createVoiceDemo() {
 		}
 	}
 
+	/**
+	 * Kick off (at most once per tab session) a background fetch of the auto-greet opening
+	 * line, well before it's needed — so it's already in hand by the time startListening()
+	 * wants to speak it. Resolves to the text, or null on any failure whatsoever; the
+	 * returned promise itself must never reject (consumeGreeting() races it against a timeout).
+	 */
+	function prefetchGreeting(): void {
+		if (!persona.autoGreet) return;
+		// consumeGreeting() only ever fires in hands-free mode — a PTT session would prefetch
+		// (and burn a real Hermes call) on every load for a greeting that can never be consumed.
+		if (talkMode !== 'handsfree') return;
+		if (hasGreetedThisSession()) return;
+		if (greetingPrefetch) return;
+		if (destroyed) return;
+
+		greetingPrefetch = (async () => {
+			try {
+				const res = await fetch('/api/greeting', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					credentials: 'same-origin',
+					body: JSON.stringify({ session_id: voiceSessionId })
+				});
+				if (!res.ok) return null;
+				const parsed = (await res.json().catch(() => null)) as {
+					ok?: boolean;
+					text?: string;
+				} | null;
+				if (!parsed || parsed.ok !== true) return null;
+				return typeof parsed.text === 'string' && parsed.text ? parsed.text : null;
+			} catch {
+				return null;
+			}
+		})();
+	}
+
+	/**
+	 * Consumes the prefetched greeting (started at the given turn, i.e. right after
+	 * startListening() finished) and speaks it as the assistant's first turn. Abandons
+	 * silently — no error, no retry — if the text never arrived in time, the session was
+	 * torn down, the user has since started talking (their turn always wins), or a Hermes
+	 * tool-bridge call is already active.
+	 */
+	async function consumeGreeting(startTurn: number) {
+		// One attempt per tab session, success or failure — mark before awaiting anything.
+		markGreetedThisSession();
+		const prefetch = greetingPrefetch;
+		if (!prefetch) return;
+
+		try {
+			const text = await Promise.race([
+				prefetch,
+				new Promise<string | null>((resolve) => setTimeout(() => resolve(null), GREET_WAIT_MS))
+			]);
+
+			if (!text) return;
+			if (destroyed) return;
+			if (startTurn !== turnId) return; // user's turn has moved on since kickoff
+			if (state !== 'listening') return;
+			if (userSpeechActive) return; // user is already mid-utterance — their turn wins
+			if (hermesBridgeActive) return;
+			if (!client?.ready) return;
+
+			busy = true;
+			statusOverride = null;
+			turnId += 1;
+			const myTurn = turnId;
+
+			// Mirror sendText()'s guard against a half-open mic turn racing this one (C3).
+			capture?.stop();
+			try {
+				client.clearInputBuffer();
+			} catch {
+				/* ignore */
+			}
+
+			playback?.interrupt();
+			state = 'thinking';
+			syncMicSend();
+			statusOverride = null;
+
+			greetingTurnId = myTurn;
+			client.send({
+				type: 'response.create',
+				response: { instructions: buildGreetingResponseInstructions(text, persona) }
+			});
+
+			clearThinkTimer();
+			thinkTimer = setTimeout(() => {
+				if (destroyed || myTurn !== turnId) return;
+				if (state === 'thinking' && !hermesBridgeActive) {
+					fail('error.noReply');
+				}
+			}, THINK_TIMEOUT_MS);
+		} catch {
+			// Greeting is a nice-to-have — never let it surface an error or break the session.
+		}
+	}
+
 	async function warm(): Promise<void> {
+		prefetchGreeting();
 		attachNetworkWatch();
 		if (destroyed) return;
 		if (busy || state !== 'idle' || hermesBridgeActive) return;
@@ -1408,6 +1583,7 @@ export function createVoiceDemo() {
 		suppressIdleForTool = false;
 		busy = false;
 		needsReconnect = false;
+		userSpeechActive = false;
 
 		try {
 			const ctx = await ensureAudio();
@@ -1445,6 +1621,7 @@ export function createVoiceDemo() {
 		statusOverride = null;
 		turnId += 1;
 		const myTurn = turnId;
+		userSpeechActive = false;
 
 		try {
 			if (warmInFlight) {
@@ -1481,6 +1658,14 @@ export function createVoiceDemo() {
 			syncMicSend();
 			statusOverride = null;
 			pulse(12);
+
+			// Auto-greet: hands-free only (see the C2 addendum — in PTT this would deadlock
+			// the tap-to-talk toggle against the greeting's own "thinking" state) and gated
+			// on the binding actually having it enabled and not already greeted this tab
+			// session. Fire-and-forget from here.
+			if (persona.autoGreet && talkMode === 'handsfree' && !hasGreetedThisSession()) {
+				void consumeGreeting(myTurn);
+			}
 		} catch (err) {
 			if (destroyed || myTurn !== turnId) {
 				busy = false;
@@ -1739,7 +1924,7 @@ export function createVoiceDemo() {
 
 	function refreshInstructions() {
 		if (!client?.open) return;
-		client.updateInstructions(buildHermesVoiceInstructions(getLocale()));
+		client.updateInstructions(buildHermesVoiceInstructions(getLocale(), persona));
 	}
 
 	function destroy() {
@@ -1765,6 +1950,8 @@ export function createVoiceDemo() {
 		needsReconnect = false;
 		warmInFlight = null;
 		realtimeInFlight = null;
+		greetingPrefetch = null;
+		greetingTurnId = null;
 		capture?.stop();
 		capture?.destroy();
 		capture = null;

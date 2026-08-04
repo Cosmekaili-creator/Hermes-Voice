@@ -2,6 +2,7 @@ import { env } from '$env/dynamic/private';
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
+import { DEFAULT_PERSONA, normalizePersona, type VoicePersona } from '$lib/persona/types';
 import { safeEqualStr } from '$lib/server/cryptoEqual.server';
 import {
 	applyEnvUpdatesInProcess,
@@ -22,7 +23,7 @@ export type Binding = {
 	enabled: boolean;
 	createdAt: string;
 	updatedAt: string;
-};
+} & VoicePersona;
 
 export type BindingsFile = {
 	version: 1;
@@ -43,7 +44,7 @@ export type RedactedBinding = {
 	hermesSessionKeyHint: string;
 	createdAt: string;
 	updatedAt: string;
-};
+} & VoicePersona;
 
 export type BindingsLoad =
 	| { status: 'ok'; file: BindingsFile }
@@ -91,7 +92,28 @@ export function redactBinding(b: Binding): RedactedBinding {
 		hermesSessionKeySet: Boolean(b.hermesSessionKey),
 		hermesSessionKeyHint: b.hermesSessionKey ? hintLast4(b.hermesSessionKey) : '',
 		createdAt: b.createdAt,
-		updatedAt: b.updatedAt
+		updatedAt: b.updatedAt,
+		// Persona fields are not secret — pass through verbatim.
+		assistantName: b.assistantName,
+		addressName: b.addressName,
+		formalAddress: b.formalAddress,
+		patientSilence: b.patientSilence,
+		autoGreet: b.autoGreet,
+		handsFreeSilenceMs: b.handsFreeSilenceMs,
+		defaultTalkMode: b.defaultTalkMode
+	};
+}
+
+/** The one conversion point from a Binding to the client-safe VoicePersona it carries. */
+export function personaFromBinding(b: Binding): VoicePersona {
+	return {
+		assistantName: b.assistantName,
+		addressName: b.addressName,
+		formalAddress: b.formalAddress,
+		patientSilence: b.patientSilence,
+		autoGreet: b.autoGreet,
+		handsFreeSilenceMs: b.handsFreeSilenceMs,
+		defaultTalkMode: b.defaultTalkMode
 	};
 }
 
@@ -122,7 +144,13 @@ function normalizeBinding(raw: unknown): Binding | null {
 		hermesSessionKey,
 		enabled,
 		createdAt,
-		updatedAt
+		updatedAt,
+		// Persona fields are optional in the JSON row — absent fields normalize to
+		// DEFAULT_PERSONA, reproducing today's exact behavior for every existing binding.
+		// This MUST stay wired in: the owner PATCH route (`{ ...current, ...updates }`)
+		// round-trips through this normalizer on every write, so dropping this spread
+		// would silently erase persona on the next unrelated field edit.
+		...normalizePersona(o)
 	};
 }
 
@@ -249,7 +277,8 @@ function ownerFromSeed(seed: EnvSeed): Binding {
 		hermesSessionKey: seed.hermesSessionKey,
 		enabled: true,
 		createdAt: now,
-		updatedAt: now
+		updatedAt: now,
+		...DEFAULT_PERSONA
 	};
 }
 
@@ -302,7 +331,8 @@ export function syntheticEnvBinding(): Binding | null {
 		hermesSessionKey: readEnvTrimmed('HERMES_SESSION_KEY') || DEFAULT_SESSION_KEY,
 		enabled: true,
 		createdAt: now,
-		updatedAt: now
+		updatedAt: now,
+		...DEFAULT_PERSONA
 	};
 }
 

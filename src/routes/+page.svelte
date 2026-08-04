@@ -18,7 +18,7 @@
 </script>
 
 {#if data.unlocked}
-	<LazicLounge />
+	<LazicLounge persona={data.persona} />
 {:else}
 	<LockedGate />
 {/if}

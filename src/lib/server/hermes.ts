@@ -7,6 +7,10 @@ const HERMES_TIMEOUT_MS = 120_000;
 /** Cap authenticated Hermes prompt size (chars) — DoS / cost control. */
 export const MAX_HERMES_REQUEST_CHARS = 16_000;
 
+/** The one sentinel string for "Hermes returned nothing" — referenced at every call site so
+ * wording can never drift into a 4th silent variant (the greeting sanitizer checks against it too). */
+export const HERMES_EMPTY_REPLY = 'Hermes returned an empty reply.';
+
 /**
  * Voice bridge hint — Telegram often uses browser tools successfully while the
  * model may pick `web_extract` (Firecrawl) on the API path and fail hard.
@@ -199,7 +203,7 @@ export async function streamHermesChat(opts: {
 		try {
 			const parsed = JSON.parse(rawText) as unknown;
 			const text = extractAssistantText(parsed);
-			return { text: text || 'Hermes returned an empty reply.' };
+			return { text: text || HERMES_EMPTY_REPLY };
 		} catch {
 			console.error('Hermes chat/completions: expected SSE stream');
 			error(502, 'Hermes request failed');
@@ -245,7 +249,7 @@ export async function streamHermesChat(opts: {
 	}
 
 	const text = assembled.trim();
-	return { text: text || 'Hermes returned an empty reply.' };
+	return { text: text || HERMES_EMPTY_REPLY };
 }
 
 /**
@@ -259,6 +263,11 @@ export async function callHermesChat(opts: {
 	hermesApiBase: string;
 	hermesApiKey: string;
 	hermesSessionKey: string;
+	/** Defaults to the shared HERMES_TIMEOUT_MS — unchanged for the real ask_hermes path. */
+	timeoutMs?: number;
+	/** Defaults to VOICE_HERMES_SYSTEM. The greeting caller passes a lean override that
+	 * forbids browsing/search tools so a short timeout isn't blown on scrape attempts. */
+	systemPrompt?: string;
 }): Promise<HermesChatResult> {
 	const { apiKey, sessionKey, target, request } = await resolveHermesTarget(opts);
 	const headers = hermesHeaders({
@@ -268,11 +277,12 @@ export async function callHermesChat(opts: {
 		sessionId: opts.sessionId
 	});
 	const url = `${target.fetchBase}/v1/chat/completions`;
-	const timeout = AbortSignal.timeout(HERMES_TIMEOUT_MS);
+	const timeout = AbortSignal.timeout(opts.timeoutMs ?? HERMES_TIMEOUT_MS);
 	const signal =
 		opts.signal && typeof AbortSignal.any === 'function'
 			? AbortSignal.any([timeout, opts.signal])
 			: timeout;
+	const systemPrompt = opts.systemPrompt ?? VOICE_HERMES_SYSTEM;
 
 	let upstream: Response;
 	try {
@@ -283,7 +293,7 @@ export async function callHermesChat(opts: {
 				model: 'hermes-agent',
 				stream: false,
 				messages: [
-					{ role: 'system', content: VOICE_HERMES_SYSTEM },
+					{ role: 'system', content: systemPrompt },
 					{ role: 'user', content: request }
 				]
 			}),
@@ -316,7 +326,7 @@ export async function callHermesChat(opts: {
 
 	const text = extractAssistantText(parsed);
 	if (!text) {
-		return { text: 'Hermes returned an empty reply.' };
+		return { text: HERMES_EMPTY_REPLY };
 	}
 	return { text };
 }

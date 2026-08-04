@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { json, type RequestHandler } from '@sveltejs/kit';
+import { DEFAULT_PERSONA } from '$lib/persona/types';
 import { requireOwner, requireVoiceKey } from '$lib/server/auth';
 import {
 	defaultHermesBase,
@@ -88,7 +89,11 @@ export const POST: RequestHandler = async (event) => {
 		hermesSessionKey,
 		enabled: true,
 		createdAt: now,
-		updatedAt: now
+		updatedAt: now,
+		// No persona-editing UI (by design — see bindings.server.ts / VOICE_PLAN §9): a
+		// new user always starts as the plain default persona; a custom persona row is
+		// hand-edited into data/bindings.json directly.
+		...DEFAULT_PERSONA
 	};
 
 	const next = { version: 1 as const, users: [...imported.file.users, user] };

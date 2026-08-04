@@ -1,5 +1,7 @@
 /** Shared provider-adapter types (client-safe). */
 
+import { MAX_HANDS_FREE_SILENCE_MS, MIN_HANDS_FREE_SILENCE_MS } from '$lib/persona/types';
+
 export type ProviderId = 'xai' | 'openai';
 
 export type ProviderTransport = 'websocket_subprotocol' | 'webrtc';
@@ -69,8 +71,36 @@ export const OPENAI_HANDS_FREE_TURN_DETECTION = {
 /** @deprecated Prefer `handsFreeTurnDetectionFor(provider)` — aliases xAI. */
 export const HANDS_FREE_TURN_DETECTION = XAI_HANDS_FREE_TURN_DETECTION;
 
-export function handsFreeTurnDetectionFor(provider: ProviderId): Exclude<WireTurnDetection, null> {
-	return provider === 'openai' ? OPENAI_HANDS_FREE_TURN_DETECTION : XAI_HANDS_FREE_TURN_DETECTION;
+const DEFAULT_HANDS_FREE_SILENCE_MS = XAI_HANDS_FREE_TURN_DETECTION.silence_duration_ms;
+
+function clamp(value: number, min: number, max: number): number {
+	return Math.min(max, Math.max(min, value));
+}
+
+/**
+ * No override, or an override equal to the default (1200ms), returns the frozen exported
+ * const BY IDENTITY (not a copy) — this keeps every existing caller (the default binding,
+ * which never sets `handsFreeSilenceMs` away from its 1200ms default) provably untouched.
+ *
+ * OpenAI's `semantic_vad` has no per-response silence-duration knob (VOICE_PROVIDER is
+ * xAI-only for now for this override) — any override is ignored there and the frozen
+ * OPENAI_HANDS_FREE_TURN_DETECTION const is always returned by identity.
+ */
+export function handsFreeTurnDetectionFor(
+	provider: ProviderId,
+	opts?: { silenceMs?: number }
+): Exclude<WireTurnDetection, null> {
+	if (provider === 'openai') {
+		return OPENAI_HANDS_FREE_TURN_DETECTION;
+	}
+	const silenceMs = opts?.silenceMs;
+	if (silenceMs === undefined || silenceMs === DEFAULT_HANDS_FREE_SILENCE_MS) {
+		return XAI_HANDS_FREE_TURN_DETECTION;
+	}
+	return {
+		...XAI_HANDS_FREE_TURN_DETECTION,
+		silence_duration_ms: clamp(silenceMs, MIN_HANDS_FREE_SILENCE_MS, MAX_HANDS_FREE_SILENCE_MS)
+	};
 }
 
 export type RealtimeServerEvent = {
