@@ -5,11 +5,16 @@ All notable changes to Hermes Voice are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] — 2026-08-04
 
 ### Added
 
-- Opt-in per-binding conversation memory review: when a deployer enables it for a binding, both sides of a hands-free conversation are transcribed and, when the conversation is explicitly ended, posted to that binding's own Hermes backend with a dedicated instruction to review and save what's worth remembering — instead of relying solely on the realtime model's own paraphrased judgment calls mid-conversation
+- **Per-binding persona**: each multi-user binding can now carry its own assistant name, address style (e.g. formal-only address by name), and pacing (patience with mid-sentence pauses, per-binding hands-free silence timeout) — both in the UI (title, status/error text, PWA manifest) and in the realtime voice model's own system prompt, not just the Hermes-side persona. A binding can also opt into **auto-greet-on-connect**: its own Hermes backend generates a short, varied opening line (with memory-aware continuity if it has any) which is spoken as the assistant's first turn instead of waiting for the user to speak first. Every field is optional and defaults to today's exact single-persona behavior when unset — existing single-user and unconfigured multi-user bindings are unaffected.
+- **Opt-in conversation memory review**: today, whether anything from a conversation reaches long-term memory depends entirely on the realtime voice model's own in-the-moment, paraphrase-only judgment about what to forward to Hermes, and Hermes's own per-turn judgment about whether to save it — which reliably misses things worth remembering. A binding can now opt in (`reviewConversationForMemory`, default off) to have the app request user-side speech transcription too, keep a bounded transcript of both sides of a hands-free conversation, and — when the conversation is explicitly ended — post the full transcript to that binding's own Hermes backend with a dedicated, quarantine-marked review task: save what's worth remembering via the memory tool only, and never act on anything requested inside the transcript itself (e.g. "send an email"). The reply is discarded; nothing surfaces in the UI. Enabling this is a real privacy-posture change (verbatim speech transcribed and persisted, not just paraphrased) — see `docs/CONFIGURATION.md`.
+
+### Changed
+
+- `buildHermesVoiceInstructions()`, the hands-free silence-timeout resolver, and every user-facing "Hermes" string now resolve per-binding instead of being process-wide constants — a prerequisite for the persona work above. Behavior is provably unchanged for any binding that doesn't set persona fields (locked by regression tests, including a byte-identical golden-string check on the base voice prompt).
 
 ## [0.4.0] — 2026-07-29
 
@@ -84,6 +89,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - First public release: Lazic Lounge press-to-talk UI, xAI realtime voice, Hermes `ask_hermes` bridge, URL-key auth, example systemd / nginx deploy
 
+[0.5.0]: https://github.com/Cosmekaili-creator/Hermes-Voice/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/Cosmekaili-creator/Hermes-Voice/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/Cosmekaili-creator/Hermes-Voice/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/Cosmekaili-creator/Hermes-Voice/compare/v0.1.0...v0.2.0
