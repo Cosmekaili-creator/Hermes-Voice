@@ -9,6 +9,8 @@ Private **realtime voice** web UI for [Hermes Agent](https://github.com/NousRese
 - **Providers** — [xAI](https://x.ai/) realtime (default) or [OpenAI](https://openai.com/) Realtime via `VOICE_PROVIDER`
 - **Hermes bridge** — email, calendar, contacts, and other tool work via `ask_hermes` → your Hermes API
 - **Auth** — URL key gate (`?k=`); optional multi-user with one Hermes **profile** per Voice user
+- **Persona** — per-binding assistant name, address style, pacing, and auto-greet-on-connect; each Voice user can feel distinct without a fork
+- **Memory review** — opt-in per binding: capture both sides of a hands-free conversation and hand the transcript to that user's own Hermes profile for a dedicated memory-extraction pass, instead of relying on incidental per-turn tool-calling
 - **i18n** — UI locales `en` / `fr` / `es` (detect + manual override)
 - **Setup** — optional WebUI wizard (`SETUP_TOKEN`) + owner health / user admin
 
@@ -105,6 +107,8 @@ Default is single-user (one `VOICE_URL_KEY` + one Hermes trio in `.env`).
 With `MULTI_USER=1`, each Voice user binds to an isolated Hermes profile (own API base/key). Enable and manage users at `/owner/users`; readiness at `/owner/health`.
 
 **Ops cost:** N Voice users ≈ N Hermes profile processes (ports, keys, `HERMES_HOME`). Do not hide that cost. Runbook: [docs/OPS.md](docs/OPS.md).
+
+Each binding can also carry its own persona (custom assistant name, address style, pacing, hands-free timing, auto-greet) and, opt-in per binding, **conversation memory review**: when a hands-free conversation explicitly ends, the accumulated transcript of both sides is sent to that user's own Hermes profile with a fixed instruction to save anything worth remembering — a dedicated pass, rather than hoping a live tool call happens to catch it. Off by default; enabling it means that binding's raw speech is transcribed and persisted to memory, which changes the data posture for that user — see the privacy note in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ## Production
 
