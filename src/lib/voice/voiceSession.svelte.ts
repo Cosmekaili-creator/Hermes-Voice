@@ -101,7 +101,6 @@ class VoiceRawError extends Error {
 const THINK_TIMEOUT_MS = 18000;
 const HERMES_BRIDGE_TIMEOUT_MS = 150_000;
 const TOKEN_SKEW_MS = 30_000;
-const CANCEL_ARM_MS = 900;
 const WAIT_TICK_MS = 1000;
 const WAIT_PHRASE_EVERY_TICKS = 4;
 const WARM_RECHECK_MS = 60_000;
@@ -202,7 +201,6 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 	let busy = $state(false);
 	let needsReconnect = $state(false);
 	let hermesBridgeActive = $state(false);
-	let cancelArmed = $state(false);
 	let talkMode = $state<TalkMode>(readStoredTalkMode(persona.defaultTalkMode ?? 'ptt'));
 	/** Browser online/offline hint. Display-only — never gates start/stop. */
 	let online = $state(true);
@@ -292,7 +290,6 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 	let client: RealtimeClient | null = null;
 	let token = $state.raw<MintResult | null>(null);
 	let thinkTimer: ReturnType<typeof setTimeout> | null = null;
-	let cancelArmTimer: ReturnType<typeof setTimeout> | null = null;
 	let waitTickTimer: ReturnType<typeof setInterval> | null = null;
 	let warmRecheckTimer: ReturnType<typeof setInterval> | null = null;
 	let hermesAbort: AbortController | null = null;
@@ -355,14 +352,6 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		if (thinkTimer !== null) {
 			clearTimeout(thinkTimer);
 			thinkTimer = null;
-		}
-	}
-
-	function clearCancelArm() {
-		cancelArmed = false;
-		if (cancelArmTimer !== null) {
-			clearTimeout(cancelArmTimer);
-			cancelArmTimer = null;
 		}
 	}
 
@@ -651,7 +640,7 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 	}
 
 	function updateWaitStatus() {
-		if (!hermesBridgeActive || destroyed || cancelArmed) return;
+		if (!hermesBridgeActive || destroyed) return;
 		waitElapsedSec = Math.max(0, Math.floor((Date.now() - hermesStartedAt) / 1000));
 		// Phrase only — tool activity is a separate Lounge line under status.
 		statusOverride = { kind: 'key', key: WAIT_KEYS[waitPhraseIndex % WAIT_KEYS.length] };
@@ -670,16 +659,13 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 			if (waitTickCount % WAIT_PHRASE_EVERY_TICKS === 0) {
 				waitPhraseIndex += 1;
 			}
-			if (!cancelArmed) {
-				updateWaitStatus();
-			}
+			updateWaitStatus();
 		}, WAIT_TICK_MS);
 	}
 
 	function endHermesBridgeUi() {
 		hermesBridgeActive = false;
 		hermesWaitActivity = null;
-		clearCancelArm();
 		clearWaitRotation();
 		if (hermesAbort) {
 			hermesAbort = null;
@@ -693,7 +679,6 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 	 */
 	function setIdle(override: StatusOverride = null, reconnect = false) {
 		clearThinkTimer();
-		clearCancelArm();
 		clearWaitRotation();
 		hermesWaitActivity = null;
 		if (hermesAbort) {
@@ -797,7 +782,6 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		hermesAbort = null;
 		turnId += 1;
 		clearThinkTimer();
-		clearCancelArm();
 		clearWaitRotation();
 		hermesWaitActivity = null;
 		suppressIdleForTool = false;
@@ -817,24 +801,6 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 			return;
 		}
 		setIdle({ kind: 'key', key: 'status.cancelled' });
-	}
-
-	function armOrCancelHermes() {
-		if (!hermesBridgeActive || destroyed) return;
-		if (cancelArmed) {
-			confirmCancelHermes();
-			return;
-		}
-		pulse(6);
-		cancelArmed = true;
-		statusOverride = { kind: 'key', key: 'status.cancelArm' };
-		if (cancelArmTimer !== null) clearTimeout(cancelArmTimer);
-		cancelArmTimer = setTimeout(() => {
-			cancelArmTimer = null;
-			if (!hermesBridgeActive || destroyed) return;
-			cancelArmed = false;
-			updateWaitStatus();
-		}, CANCEL_ARM_MS);
 	}
 
 	async function ensureAudio(): Promise<AudioContext> {
@@ -1092,7 +1058,6 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		busy = true;
 		state = 'thinking';
 		syncMicSend();
-		clearCancelArm();
 		startWaitRotation();
 		clearThinkTimer();
 		thinkTimer = setTimeout(() => {
@@ -1632,7 +1597,6 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		turnId += 1;
 		const myTurn = turnId;
 		clearThinkTimer();
-		clearCancelArm();
 		clearWaitRotation();
 		suppressIdleForTool = false;
 		busy = false;
@@ -1918,7 +1882,7 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 	function toggle() {
 		if (destroyed) return;
 		if (hermesBridgeActive) {
-			armOrCancelHermes();
+			confirmCancelHermes();
 			return;
 		}
 		if (busy || state === 'thinking') return;
@@ -1998,7 +1962,6 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		busy = false;
 		handsfreeArmed = false;
 		clearThinkTimer();
-		clearCancelArm();
 		clearWaitRotation();
 		clearWarmRecheck();
 		detachNetworkWatch();
@@ -2060,9 +2023,6 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		},
 		get isHermesWorking() {
 			return isHermesWorking;
-		},
-		get cancelArmed() {
-			return cancelArmed;
 		},
 		get talkMode() {
 			return talkMode;

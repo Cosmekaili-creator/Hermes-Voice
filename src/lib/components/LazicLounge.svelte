@@ -67,7 +67,7 @@
 
 	const buttonLabel = $derived.by(() => {
 		if (demo.isHermesWorking) {
-			return demo.cancelArmed ? pt('button.cancelArm') : pt('button.cancel');
+			return pt('button.cancel');
 		}
 		const handsfree = demo.talkMode === 'handsfree';
 		switch (demo.state) {
