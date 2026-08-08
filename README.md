@@ -103,7 +103,7 @@ HERMES_SESSION_KEY=agent:main:voice
 
 Optional OpenAI overrides: `OPENAI_REALTIME_MODEL`, `OPENAI_VOICE` (resolved on the server; returned non-secret on `POST /api/session`). The setup wizard stays xAI-first — OpenAI is an ops env switch. Multi-user shares the active provider key for the whole process; provider/key/voice defaults can also be changed live from the Lounge's settings modal (owner-only), no `/setup` visit required.
 
-**Voice choice**: each multi-user binding can pick its own realtime voice from `/owner/users` (`voiceId`, defaults to the provider default when unset). xAI's voice list is fetched live from its voice catalog with an explicit "Load voices" action; OpenAI's is a small hardcoded list (`marin`/`cedar` recommended) since no such API exists there. A voice change only applies to the *next* session — never a mid-call hot-swap — and a rejected/invalid pick falls back to the provider default rather than breaking the session. In single-user mode the same picker lives in the settings modal's provider section instead.
+**Voice choice**: each multi-user binding can pick its own realtime voice from `/owner/users` (`voiceId`, defaults to the provider default when unset). xAI's voice list is fetched live from its voice catalog with an explicit "Load voices" action; OpenAI's is a small hardcoded list (`marin`/`cedar` recommended) since no such API exists there. A voice change only applies to the _next_ session — never a mid-call hot-swap — and a rejected/invalid pick falls back to the provider default rather than breaking the session. In single-user mode the same picker lives in the settings modal's provider section instead.
 
 Adapter seam: `src/lib/providers/` (capability matrix, mint, xAI WebSocket + OpenAI WebRTC clients).
 
@@ -165,7 +165,7 @@ Talk modes: **push-to-talk** commits audio from the client; **hands-free** uses 
 
 ## Intentional limits
 
-- No per-Lounge-session **provider picker** — `VOICE_PROVIDER` is one process-wide choice for everyone, editable from the settings modal or `/setup`, but not per active call. Voice (not provider) *is* per-user in multi-user mode.
+- No per-Lounge-session **provider picker** — `VOICE_PROVIDER` is one process-wide choice for everyone, editable from the settings modal or `/setup`, but not per active call. Voice (not provider) _is_ per-user in multi-user mode.
 - No always-on listening without arming hands-free
 - Hermes bases must pass the SSRF allowlist (loopback / private IPs / `*.local`) — Compose service DNS names are rejected; see [docs/OPS.md](docs/OPS.md)
 - Wizard remains single-binding / xAI-first; OpenAI and multi-user are ops/admin after bootstrap
