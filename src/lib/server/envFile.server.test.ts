@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mergeEnvText } from './envFile.server';
+import { mergeEnvText, writeEnvFileAtomic } from './envFile.server';
 
 describe('mergeEnvText', () => {
 	it('upserts a new key into empty text', () => {
@@ -40,5 +40,22 @@ describe('mergeEnvText', () => {
 		const existing = 'FOO=bar';
 		const out = mergeEnvText(existing, { VOICE_URL_KEY: 'abc' });
 		expect(out).toBe('FOO=bar\nVOICE_URL_KEY=abc\n');
+	});
+});
+
+describe('writeEnvFileAtomic — newline-injection guard (A6)', () => {
+	// These never touch disk: the CR/LF check runs before any fs operation.
+	it('rejects a value containing an embedded \\n before writing', async () => {
+		const result = await writeEnvFileAtomic({
+			HERMES_SESSION_KEY: 'agent:main\nXAI_API_KEY=evil'
+		});
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.code).toBe('invalid_value');
+	});
+
+	it('rejects a value containing an embedded \\r before writing', async () => {
+		const result = await writeEnvFileAtomic({ XAI_VOICE: 'eve\rOPENAI_API_KEY=evil' });
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.code).toBe('invalid_value');
 	});
 });

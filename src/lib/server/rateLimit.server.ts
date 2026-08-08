@@ -83,5 +83,12 @@ export const RATE = {
 	setupSave: { limit: 10, windowMs: 60_000 },
 	ownerHealth: { limit: 10, windowMs: 60_000 },
 	ownerMutate: { limit: 30, windowMs: 60_000 },
-	authExchange: { limit: 20, windowMs: 60_000 }
+	authExchange: { limit: 20, windowMs: 60_000 },
+	// Dedicated bucket for the xAI voice-list fetch (chunk B) — do NOT reuse setupProbe,
+	// which is shared with the four existing Test buttons; a debounced key-typing fetch
+	// against a shared bucket would 429 the owner's own connectivity test.
+	voiceList: { limit: 6, windowMs: 60_000 },
+	// Dedicated bucket for the settings self-restart action (chunk D) — separate from
+	// voiceList and setupSave so a restart-button mis-click storm can't eat either budget.
+	setupRestart: { limit: 3, windowMs: 5 * 60_000 }
 } as const;

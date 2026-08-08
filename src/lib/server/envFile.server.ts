@@ -9,11 +9,17 @@ export function resolveEnvFilePath(): string {
 	return path.join(process.cwd(), '.env');
 }
 
+// NOTE: this list is the definition site for what /api/setup/save and (as of the
+// settings feature) /api/settings/save are allowed to write. The latter's per-section
+// allowlist in src/routes/api/settings/save/+server.ts must stay in sync with this list
+// — if you add/remove a key here, check that route too.
 export const MANAGED_ENV_KEYS = [
 	'VOICE_URL_KEY',
 	'VOICE_PROVIDER',
 	'XAI_API_KEY',
 	'OPENAI_API_KEY',
+	'XAI_VOICE',
+	'OPENAI_VOICE',
 	'HERMES_API_BASE',
 	'HERMES_API_KEY',
 	'HERMES_SESSION_KEY',
@@ -28,7 +34,9 @@ export type ManagedEnvKey = (typeof MANAGED_ENV_KEYS)[number];
 export type EnvUpdates = Partial<Record<ManagedEnvKey, string | null>>;
 
 export type EnvWriteResult =
-	{ ok: true; path: string } | { ok: false; code: 'env_write_failed'; message?: string };
+	| { ok: true; path: string }
+	| { ok: false; code: 'env_write_failed'; message?: string }
+	| { ok: false; code: 'invalid_value'; message?: string };
 
 function formatEnvValue(value: string): string {
 	if (/[\s#"'$`\\]/.test(value) || value === '') {
@@ -96,10 +104,33 @@ export async function readEnvFileText(): Promise<string> {
 }
 
 /**
+ * Reject any value containing a literal CR or LF outright rather than attempting to
+ * escape/quote it. A quoted value with an embedded newline is still written as a real
+ * second physical line — both this app's own `mergeEnvText` parser and systemd's
+ * `EnvironmentFile=` loader (whose multi-line-quoting semantics are version-dependent)
+ * would then read it as a second `KEY=value` assignment. This is a genuine env-injection
+ * vector for any managed key fed from user input (e.g. `HERMES_SESSION_KEY`,
+ * `XAI_VOICE`/`OPENAI_VOICE`) — hard-reject here so both the old and new save routes are
+ * protected regardless of what validation ran upstream.
+ */
+function findNewlineInjection(updates: EnvUpdates): string | null {
+	for (const [key, value] of Object.entries(updates)) {
+		if (typeof value === 'string' && /[\r\n]/.test(value)) return key;
+	}
+	return null;
+}
+
+/**
  * Atomic write: create temp with mode 0o600 → rename over target.
  * Prefer create-with-mode so secrets are never briefly world-readable.
  */
 export async function writeEnvFileAtomic(updates: EnvUpdates): Promise<EnvWriteResult> {
+	const badKey = findNewlineInjection(updates);
+	if (badKey) {
+		console.error(`envFile write rejected: value for ${badKey} contains a CR/LF`);
+		return { ok: false, code: 'invalid_value', message: `${badKey} contains a newline` };
+	}
+
 	const filePath = resolveEnvFilePath();
 	const dir = path.dirname(filePath);
 	const tmpPath = path.join(dir, `.env.${process.pid}.${Date.now()}.tmp`);

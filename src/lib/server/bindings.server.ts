@@ -1,4 +1,3 @@
-import { env } from '$env/dynamic/private';
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
@@ -9,6 +8,7 @@ import {
 	writeEnvFileAtomic,
 	type EnvWriteResult
 } from '$lib/server/envFile.server';
+import { readEnvTrimmed } from '$lib/server/runtimeEnv.server';
 
 export type BindingRole = 'owner' | 'user';
 
@@ -55,13 +55,6 @@ export type BindingsLoad =
 const DEFAULT_HERMES_BASE = 'http://127.0.0.1:8642';
 const DEFAULT_SESSION_KEY = 'agent:main:voice';
 
-function readEnvTrimmed(key: string): string | null {
-	const fromProcess = process.env[key]?.trim();
-	if (fromProcess) return fromProcess;
-	const fromSnapshot = env[key]?.trim();
-	return fromSnapshot || null;
-}
-
 export function isMultiUserMode(): boolean {
 	return readEnvTrimmed('MULTI_USER') === '1';
 }
@@ -72,7 +65,7 @@ export function resolveBindingsPath(): string {
 	return path.join(process.cwd(), 'data', 'bindings.json');
 }
 
-function hintLast4(value: string): string {
+export function hintLast4(value: string): string {
 	const t = value.trim();
 	if (t.length <= 4) return '••••';
 	return `…${t.slice(-4)}`;
@@ -101,7 +94,8 @@ export function redactBinding(b: Binding): RedactedBinding {
 		autoGreet: b.autoGreet,
 		handsFreeSilenceMs: b.handsFreeSilenceMs,
 		defaultTalkMode: b.defaultTalkMode,
-		reviewConversationForMemory: b.reviewConversationForMemory
+		reviewConversationForMemory: b.reviewConversationForMemory,
+		voiceId: b.voiceId
 	};
 }
 
@@ -115,7 +109,8 @@ export function personaFromBinding(b: Binding): VoicePersona {
 		autoGreet: b.autoGreet,
 		handsFreeSilenceMs: b.handsFreeSilenceMs,
 		defaultTalkMode: b.defaultTalkMode,
-		reviewConversationForMemory: b.reviewConversationForMemory
+		reviewConversationForMemory: b.reviewConversationForMemory,
+		voiceId: b.voiceId
 	};
 }
 
@@ -357,6 +352,26 @@ export function defaultSessionKey(): string {
 
 export function defaultHermesBase(): string {
 	return DEFAULT_HERMES_BASE;
+}
+
+// C0 + C1 control characters — same class `persona/types.ts`'s CONTROL_CHARS_RE /
+// normalizeVoiceId strip/reject, kept as a local copy since this module is server-only
+// and persona/types.ts is deliberately client-safe (no cross-import needed either way).
+// eslint-disable-next-line no-control-regex
+const SESSION_KEY_CONTROL_CHARS_RE = /[\x00-\x1F\x7F-\x9F]/;
+
+/**
+ * Validates `HERMES_SESSION_KEY` input for `/api/settings/save` (chunk A5). Rejects any
+ * control character — including `\r`/`\n`, the same env-injection vector guarded by
+ * `normalizeVoiceId` / `writeEnvFileAtomic`'s newline rejection (see A6) — outright
+ * rather than stripping, so a rejected value can never silently pass through truncated.
+ * Trimmed; empty → null.
+ */
+export function normalizeSessionKey(raw: unknown): string | null {
+	if (typeof raw !== 'string') return null;
+	if (SESSION_KEY_CONTROL_CHARS_RE.test(raw)) return null;
+	const trimmed = raw.trim();
+	return trimmed.length > 0 ? trimmed : null;
 }
 
 export { safeEqualStr, readEnvTrimmed };

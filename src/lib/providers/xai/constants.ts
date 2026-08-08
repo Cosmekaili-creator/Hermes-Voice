@@ -11,6 +11,9 @@ export const DEFAULT_INPUT_TRANSCRIPTION_MODEL = 'grok-transcribe';
 export const CLIENT_SECRETS_URL = 'https://api.x.ai/v1/realtime/client_secrets';
 export const DEFAULT_TTL_SECONDS = 300;
 
+/** xAI's TTS voice catalog — see xai/voices.server.ts for the fetch + cache. */
+export const TTS_VOICES_URL = 'https://api.x.ai/v1/tts/voices';
+
 export function realtimeUrl(model: string): string {
 	return `wss://api.x.ai/v1/realtime?model=${encodeURIComponent(model)}`;
 }

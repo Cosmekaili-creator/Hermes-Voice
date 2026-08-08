@@ -33,6 +33,10 @@ export type VoiceInfo = {
 	id: string;
 	name: string;
 	description?: string;
+	/** BCP-47-ish language tag from the provider's catalog, when it supplies one (xAI). */
+	language?: string;
+	/** Provider-recommended pick — surfaced as a hint in the picker UI, not auto-selected. */
+	recommended?: boolean;
 };
 
 /** Wire-level turn_detection for realtime session.update (xAI + OpenAI). */

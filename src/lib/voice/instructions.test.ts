@@ -10,7 +10,8 @@ const NOVA_PERSONA: VoicePersona = {
 	autoGreet: true,
 	handsFreeSilenceMs: 4500,
 	defaultTalkMode: 'handsfree',
-	reviewConversationForMemory: false
+	reviewConversationForMemory: false,
+	voiceId: null
 };
 
 const DEFAULT_GOLDEN_INSTRUCTIONS =

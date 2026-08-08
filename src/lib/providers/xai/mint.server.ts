@@ -1,6 +1,6 @@
-import { env } from '$env/dynamic/private';
 import { error } from '@sveltejs/kit';
 import { redactForLog } from '$lib/server/logRedact';
+import { readEnvTrimmed } from '$lib/server/runtimeEnv.server';
 import type { EphemeralClientSecret } from '../types';
 import { CLIENT_SECRETS_URL, DEFAULT_TTL_SECONDS } from './constants';
 
@@ -14,7 +14,7 @@ export type MintProbeResult =
  * Never logs XAI_API_KEY or the ephemeral value.
  */
 async function mintInternal(apiKeyOverride?: string): Promise<MintProbeResult> {
-	const apiKey = apiKeyOverride?.trim() || env.XAI_API_KEY?.trim();
+	const apiKey = apiKeyOverride?.trim() || readEnvTrimmed('XAI_API_KEY') || undefined;
 	if (!apiKey) {
 		return { ok: false, code: 'missing_key' };
 	}

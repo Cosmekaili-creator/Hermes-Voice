@@ -37,8 +37,19 @@ Set `ORIGIN` in `.env` to your public HTTPS origin.
 2. Ensure the unit can write that file: uncomment `ReadWritePaths=/opt/hermes-voice` (or the `.env` parent) in `hermes-voice.service` under `ProtectSystem=strict`.
 3. `ENV_FILE` (if set) **must** be the same path as systemd `EnvironmentFile=` — mismatch means the wizard writes a file the unit never reloads.
 4. Start the unit, open `https://your-host/setup?token=<SETUP_TOKEN>`, complete steps, save.
-5. `sudo systemctl restart hermes-voice` (required — disk write does not reload process env).
+5. `sudo systemctl restart hermes-voice` (required for the very first bootstrap save — the process hasn't loaded `.env` at all yet). After this first restart, most changes made from `/setup` (rotation) or the in-app settings modal hot-apply immediately with **no restart needed**: only an `ORIGIN` change still requires one (adapter-node reads it once at process start and can never reload it). The save response tells you which — `restartRequired: true` only when `ORIGIN` actually changed.
 6. Open the Lounge with `/?k=<VOICE_URL_KEY>`. Owner probes: `/owner/health` (URL-key session). Public `GET /health` stays liveness-only.
+
+### Settings modal & self-restart (optional)
+
+An owner-only settings modal (provider pill + gear icon in the Lounge) lets you change the voice provider, API keys, per-binding/env voice choice, and Hermes connection without visiting `/setup` — see `POST /api/settings/save` (present-key-only write semantics; never writes `VOICE_URL_KEY`/`ORIGIN`/`SETUP_COMPLETE`/`SETUP_TOKEN`/`MULTI_USER`). As above, these changes hot-apply with no restart.
+
+The modal also has a manual "Restart service" action for out-of-band changes (e.g. you hand-edited `.env` over SSH) — this is gated hard behind `ALLOW_SELF_RESTART=1`, which is **not** settable from the browser (deliberately absent from the managed env-key allowlist) and ships commented-out in `deploy/hermes-voice.service`. To enable it:
+
+1. **Sequencing matters.** First confirm `Restart=always` is live on the unit you're about to touch: `systemctl show hermes-voice.service -p Restart` → must say `Restart=always` (already the default in `deploy/hermes-voice.service` as of this feature — if you're upgrading an older install, `sudo systemctl daemon-reload` after updating the unit file). Enabling `ALLOW_SELF_RESTART=1` before this is true means the **first restart click takes the service down with no auto-recovery** (SIGTERM → clean `exit(0)`, and `Restart=on-failure` does not restart on a clean exit).
+2. Uncomment `Environment=ALLOW_SELF_RESTART=1` in the unit file, then `sudo systemctl daemon-reload && sudo systemctl restart hermes-voice`.
+3. Mechanism: `POST /api/setup/restart` sends `SIGTERM` to the running process (never `exit(0)`, never a direct `server.close()` call) — this is adapter-node's own graceful-shutdown path, which flushes the triggering request's own response before the process exits. See `src/lib/server/selfRestart.server.ts` for the full reasoning.
+4. **Crash-loop recovery**: `StartLimitIntervalSec=300`/`StartLimitBurst=6` (both `[Unit]`-section directives — `StartLimitIntervalSec` under `[Service]` is silently ignored by systemd) are tuned so the app's own restart-button rate limit (`RATE.setupRestart`, 3 restarts per 5 minutes) can never trip them on legitimate use, while a persistently failing start (e.g. a corrupted `.env`) still lands the unit in `failed` state within a bounded window. Recover with `sudo systemctl reset-failed hermes-voice && sudo systemctl restart hermes-voice` after fixing the underlying cause.
 
 ### Multi-user (optional)
 

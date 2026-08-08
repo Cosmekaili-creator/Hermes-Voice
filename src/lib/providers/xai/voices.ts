@@ -1,7 +1,10 @@
 import type { VoiceInfo } from '../types';
 import { DEFAULT_VOICE } from './constants';
 
-/** Static voice catalog stub — unused by Lounge UI in Phase 3. */
+/**
+ * Offline fallback — live list via the voices-listing route (`voices.server.ts` /
+ * `POST /api/setup/voices/xai`); used if the live fetch fails or hasn't run yet.
+ */
 export function listVoices(): VoiceInfo[] {
 	return [
 		{

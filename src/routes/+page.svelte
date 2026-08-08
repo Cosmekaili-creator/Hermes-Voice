@@ -18,7 +18,7 @@
 </script>
 
 {#if data.unlocked}
-	<LazicLounge persona={data.persona} />
+	<LazicLounge persona={data.persona} provider={data.provider} isOwner={data.isOwner} />
 {:else}
-	<LockedGate />
+	<LockedGate setupMode={data.setupMode} />
 {/if}

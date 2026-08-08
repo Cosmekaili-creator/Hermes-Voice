@@ -66,8 +66,11 @@ export const en = {
 	'error.networkFailed': 'Network error — could not reach {assistant} Voice',
 	'error.sessionForbidden': 'Session refused — reload the page',
 	'error.sessionRateLimited': 'Too many attempts — wait a moment',
+	'error.voiceFallbackApplied':
+		"Your chosen voice wasn't available, so the default voice was used instead",
 
 	'gate.accessRestricted': 'Access Restricted',
+	'gate.setupLink': 'First-time setup',
 
 	'wizard.brand': 'HERMES',
 	'wizard.title': 'Setup',
@@ -138,6 +141,8 @@ export const en = {
 	'wizard.error.setup_locked': 'Setup is locked',
 	'wizard.error.invalid_token': 'Invalid setup token',
 	'wizard.error.generic': 'Something went wrong',
+	'wizard.error.restart_unsupported': 'Self-restart is not enabled on this server',
+	'wizard.error.restart_failed': 'Could not reach the restart endpoint',
 
 	'health.title': 'Owner health',
 	'health.voice': 'Voice gate',
@@ -209,5 +214,62 @@ export const en = {
 	'users.error.hermes_unreachable': 'Hermes unreachable',
 	'users.error.hermes_unhealthy': 'Hermes health check failed',
 	'users.error.hermes_unauthorized': 'Hermes API key rejected',
-	'users.error.missing_key': 'API key is required'
+	'users.error.missing_key': 'API key is required',
+
+	'users.persona.toggle': 'Persona',
+	'users.persona.assistantName': 'Assistant name',
+	'users.persona.addressName': "User's name (how {assistant} addresses them)",
+	'users.persona.formalAddress': 'Address formally',
+	'users.persona.patientSilence': 'Patient with mid-sentence pauses',
+	'users.persona.autoGreet': 'Greet automatically on connect (hands-free)',
+	'users.persona.handsFreeSilenceMs': 'Hands-free silence timeout (ms)',
+	'users.persona.handsFreeSilenceHint': 'Clamped to 400–15000 ms',
+	'users.persona.defaultTalkMode': 'Default talk mode',
+	'users.persona.talkModeDefault': "App default (user's own choice)",
+	'users.persona.reviewConversationForMemory': 'Review conversations for memory (opt-in)',
+	'users.persona.reviewConversationHint':
+		"Materially different privacy posture: the user's verbatim spoken words are transcribed and sent to this user's own Hermes backend for a memory-extraction pass, not just a paraphrase the voice model chooses to forward. Inform the user before enabling this.",
+
+	'settings.open': 'Settings',
+	'settings.sectionProvider': 'Voice provider',
+	'settings.sectionHermes': 'Hermes connection',
+	'settings.close': 'Close',
+	'settings.unavailableTitle': 'Settings unavailable',
+	'settings.unavailableBody':
+		"Settings can't be changed right now — finish first-time setup, or sign in as the owner.",
+	'settings.save': 'Save',
+	'settings.saving': 'Saving…',
+	'settings.saved': 'Saved',
+	'settings.blankKeepHint': 'Leave blank to keep (ends in {hint})',
+	'settings.error.generic': 'Something went wrong',
+	'settings.error.invalid_section': 'Invalid settings section',
+	'settings.error.field_not_in_section': "That field can't be changed from here",
+	'settings.error.empty_field': "This field can't be saved blank",
+	'settings.error.invalid_provider': 'Invalid voice provider',
+	'settings.error.invalid_voice_id': 'Invalid voice',
+	'settings.error.invalid_session_key': 'Invalid Hermes session key',
+	'settings.error.bindings_no_owner': 'No owner found — check the users file',
+	'settings.voice.label': 'Voice',
+	'settings.voice.providerDefault': 'Provider default',
+	'settings.voice.load': 'Load voices',
+	'settings.voice.loading': 'Loading…',
+	'settings.voice.loadError': 'Could not load voices',
+	'settings.voice.nextSessionNote':
+		'A voice change applies to your next session, not the current call.',
+	'settings.voice.reconnectNow': 'Reconnect now',
+	'settings.voice.openaiHint': 'Optimized for English; marin and cedar are recommended.',
+	'settings.voice.recommended': 'Recommended',
+	'settings.voice.multiUserNotice':
+		'Voices are set per-user in multi-user mode — manage them under',
+	'settings.voice.fallbackNote':
+		'Showing a limited default list — the live catalog failed to load.',
+
+	'settings.saveRestart': 'Restart service',
+	'settings.restartWarning':
+		"Restarting takes a few seconds. Live audio isn't interrupted, but any request in progress will fail and new sessions can't start until it's back.",
+	'settings.restartConfirm': 'Restart the Hermes Voice service now?',
+	'settings.restartStopping': 'Stopping…',
+	'settings.restartWaiting': 'Waiting for restart…',
+	'settings.restartOk': 'Back online',
+	'settings.restartTimeout': 'Could not confirm restart — check the service'
 } as const;

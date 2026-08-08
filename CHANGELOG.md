@@ -5,6 +5,28 @@ All notable changes to Hermes Voice are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-08-08
+
+### Added
+
+- **In-app settings modal**: an owner-only pill (provider name) and gear icon now sit beside the language switch in the Lounge, opening a settings modal for the voice provider (provider/keys/voice) or the Hermes connection (base URL/key/session key) without needing `/setup`. Both render unconditionally — including when the current provider key is broken and mint fails, which is exactly when settings are most needed. Non-owner (`user`-role) bindings never see them, falling back to the old inert badge.
+- **Per-binding voice choice**: each multi-user binding can now pick its own realtime voice (`voiceId`), settable per-user from `/owner/users`. In single-user mode the same picker also appears in the settings modal's provider section (process-wide env default); in multi-user mode the modal hides that picker entirely and points to `/owner/users` instead — the modal's provider-section voice control writes a process-wide env fallback (`XAI_VOICE`/`OPENAI_VOICE`) that would silently change another user's voice, not just the owner's own, so it's not offered there once `MULTI_USER=1`. xAI voices are listed live from xAI's TTS voice catalog (`POST /api/setup/voices/xai`, explicit "Load voices" action — no keystroke-triggered fetching), falling back to a small static list if the live fetch fails; OpenAI's roster is a small hardcoded list (`marin`/`cedar` added and marked recommended). A voice change applies to the _next_ session, never a mid-call hot-swap. A rejected/invalid voice pick degrades gracefully: the session retries once with the provider default and surfaces a non-fatal notice instead of failing outright.
+- Persona fields (assistant name, address style, hands-free timing, auto-greet, memory review, and now voice) are editable per-binding from `/owner/users`, not just hand-edited into `data/bindings.json`.
+- First-run discoverability: the locked gate now links to `/setup` when bootstrap is incomplete, and shows the existing ops-locked guidance when reachable — previously a fresh admin with no `/setup` link had no way to discover it existed.
+- **Owner-triggered self-restart**: a "Restart service" action in the settings modal for out-of-band changes (e.g. a hand-edited `.env`), gated hard behind `ALLOW_SELF_RESTART=1` (deliberately not settable from the browser). Mechanism is a clean `SIGTERM` — never `exit(0)`, never a direct `server.close()` call — relying on adapter-node's own graceful-shutdown handler, which is guaranteed to flush the triggering request's own response before the process exits. Client polls `/health` (two consecutive successes required) for up to 75s with progressive "Stopping… / Waiting for restart… / Back online" copy; corrected to accurately state that live realtime audio (browser↔provider direct) is _not_ interrupted by a Node-process restart — only in-flight `/api/hermes` calls, new session mints, and greeting/memory-review posts are.
+
+### Changed
+
+- `VOICE_PROVIDER`/API-key/Hermes-connection changes made via the new settings modal hot-apply immediately — no restart needed. `ORIGIN` remains the only setting that still requires one (adapter-node reads it once at module load); `POST /api/setup/save`'s `restartRequired` now reflects this accurately (previously always `true`).
+- `POST /api/owner/users/[id]` (PATCH) accepts optional persona fields, applied with present-key-only merge semantics — an unrelated single-field edit (e.g. just toggling auto-greet) can no longer silently reset a binding's other persona fields back to the default, a footgun that existed in the naive full-object-normalize approach this replaces.
+- `deploy/hermes-voice.service`: `Restart=on-failure` → `Restart=always` (required for the self-restart feature — a clean `exit(0)` after `SIGTERM` is not restarted by `on-failure`), with `StartLimitIntervalSec=300`/`StartLimitBurst=6` (`[Unit]`-section directives, not `[Service]` — the latter silently ignores `StartLimitIntervalSec`) tuned for crash-loop protection and `SHUTDOWN_TIMEOUT`/`TimeoutStopSec` tightened. The limits are set comfortably above the app's own restart-button rate limit (3 per 5 minutes) so legitimate use can never trip systemd's own crash-loop protection into `failed` state. `NoNewPrivileges=true` stays intact — the SIGTERM strategy needs zero privilege changes.
+
+### Security
+
+- New `POST /api/settings/save` route: present-key-only write semantics (a key absent from the request body is never read, written, or defaulted) as the primary fix for a config-corruption failure mode identified during design review of this feature, plus a client-side dirty-tracking layer as defense in depth. Never writes `VOICE_URL_KEY`/`ORIGIN`/`SETUP_COMPLETE`/`SETUP_TOKEN`/`MULTI_USER` under any circumstance.
+- `.env` writes now hard-reject any value containing an embedded `\r`/`\n` (`writeEnvFileAtomic`) — closes an env-injection vector that a crafted `HERMES_SESSION_KEY` (or the new `XAI_VOICE`/`OPENAI_VOICE`) could otherwise exploit to inject a second `KEY=value` line into `.env`.
+- New `POST /api/setup/restart` route: same auth gate as the save routes (no new auth surface), rate-limited (3 per 5 minutes), and hard-disabled (`501`) unless `ALLOW_SELF_RESTART=1` is set out-of-band.
+
 ## [0.5.0] — 2026-08-04
 
 ### Added
@@ -89,6 +111,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - First public release: Lazic Lounge press-to-talk UI, xAI realtime voice, Hermes `ask_hermes` bridge, URL-key auth, example systemd / nginx deploy
 
+[0.6.0]: https://github.com/Cosmekaili-creator/Hermes-Voice/compare/0.5.0...0.6.0
 [0.5.0]: https://github.com/Cosmekaili-creator/Hermes-Voice/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/Cosmekaili-creator/Hermes-Voice/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/Cosmekaili-creator/Hermes-Voice/compare/0.2.0...0.3.0

@@ -1,9 +1,11 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
+import { mergePersonaPatch } from '$lib/persona/types';
 import { clearSessionCookie, requireOwner } from '$lib/server/auth';
 import {
 	ensureBindingsImported,
 	findOwner,
 	isMultiUserMode,
+	personaFromBinding,
 	redactBinding,
 	syncOwnerToEnv,
 	voiceKeyTaken,
@@ -25,6 +27,34 @@ function boolField(body: unknown, key: string): boolean | null {
 	const v = (body as Record<string, unknown>)[key];
 	if (typeof v === 'boolean') return v;
 	return null;
+}
+
+const PERSONA_KEYS = [
+	'assistantName',
+	'addressName',
+	'formalAddress',
+	'patientSilence',
+	'autoGreet',
+	'handsFreeSilenceMs',
+	'defaultTalkMode',
+	'reviewConversationForMemory',
+	'voiceId'
+] as const;
+
+/**
+ * Only keys actually present (own-enumerable-property) on the body are forwarded to
+ * `mergePersonaPatch()` — this is what makes a single-field persona edit (e.g. just
+ * `autoGreet`) leave every other persona field untouched instead of silently resetting
+ * it, the exact footgun documented at `normalizePersona()` in `persona/types.ts`.
+ */
+function extractPersonaPatch(body: unknown): Record<string, unknown> {
+	if (!body || typeof body !== 'object') return {};
+	const o = body as Record<string, unknown>;
+	const patch: Record<string, unknown> = {};
+	for (const key of PERSONA_KEYS) {
+		if (Object.prototype.hasOwnProperty.call(o, key)) patch[key] = o[key];
+	}
+	return patch;
 }
 
 async function loadUsers() {
@@ -96,6 +126,10 @@ export const PATCH: RequestHandler = async (event) => {
 		return json({ ok: false, code: 'voice_key_taken' }, { status: 400 });
 	}
 
+	// Only present keys are folded in — an absent persona field is left exactly as
+	// current had it, never reset to DEFAULT_PERSONA (see extractPersonaPatch above).
+	const nextPersona = mergePersonaPatch(personaFromBinding(current), extractPersonaPatch(body));
+
 	const updated: Binding = {
 		...current,
 		label: label || current.label,
@@ -105,6 +139,7 @@ export const PATCH: RequestHandler = async (event) => {
 		hermesApiKey: hermesApiKey || current.hermesApiKey,
 		hermesSessionKey: hermesSessionKey || current.hermesSessionKey,
 		enabled: enabled === null ? current.enabled : enabled,
+		...nextPersona,
 		updatedAt: new Date().toISOString()
 	};
 

@@ -1,6 +1,19 @@
 [Unit]
 Description=Hermes Voice (SvelteKit)
 After=network.target
+# Crash-loop protection for Restart=always (below): these are [Unit]-section
+# directives, not [Service] (StartLimitIntervalSec under [Service] is silently
+# ignored by systemd; confirmed via `systemd-analyze verify`). If the unit is
+# restarted StartLimitBurst times within StartLimitIntervalSec, systemd stops
+# restarting it and it lands in `failed` state (manual `systemctl reset-failed`
+# required) — a hard, unrecoverable-without-SSH outage for a non-technical user.
+# Tuned so the app's own restart-button rate limit (POST /api/setup/restart,
+# RATE.setupRestart = 3 per 5 minutes) can NEVER trip this on its own: 6 restarts
+# within 300s gives headroom above the 3-per-5min the app itself permits, while
+# still catching a genuine fast crash loop (e.g. a bad .env write) well within
+# five minutes.
+StartLimitIntervalSec=300
+StartLimitBurst=6
 
 [Service]
 Type=simple
@@ -12,10 +25,29 @@ Environment=HOST=127.0.0.1
 Environment=PORT=4331
 # Override ORIGIN in EnvironmentFile (.env) — do not hardcode your domain here
 Environment=NODE_ENV=production
+# Tightens adapter-node's default 30s graceful-shutdown ceiling — see
+# src/lib/server/selfRestart.server.ts. TimeoutStopSec below is a systemd-level backstop
+# on top of this (must stay comfortably above it).
+Environment=SHUTDOWN_TIMEOUT=10
+# Self-restart (POST /api/setup/restart, owner-only) is a hard opt-in kill switch —
+# deliberately absent from MANAGED_ENV_KEYS, so it can only be enabled here, never from
+# a browser or any in-app save route. Leave commented out until you've verified
+# Restart=always is actually live on THIS unit (see INFRA-3 in the settings/voice-choice
+# plan) — enabling this before that is true means the first restart click takes the
+# service down with no auto-recovery.
+# Environment=ALLOW_SELF_RESTART=1
 # Adjust Node path to your install
 ExecStart=/usr/bin/node /opt/hermes-voice/build/index.js
-Restart=on-failure
+# Restart=always (not on-failure): required for the self-restart feature, whose
+# mechanism is a clean SIGTERM -> graceful shutdown -> exit(0), which Restart=on-failure
+# would NOT restart on. TimeoutStopSec must exceed SHUTDOWN_TIMEOUT above with margin.
+Restart=always
 RestartSec=5
+TimeoutStopSec=45
+# StartLimitIntervalSec/StartLimitBurst live in [Unit] above — see the comment there.
+# The exit/SIGTERM self-restart strategy needs zero privilege changes — this is the
+# whole point of choosing it over a systemctl-based restart (which would require
+# disabling this). Leave intact.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

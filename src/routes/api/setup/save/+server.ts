@@ -61,6 +61,10 @@ export const POST: RequestHandler = async (event) => {
 
 	const prevVoiceKey = existing('VOICE_URL_KEY');
 	const prevProvider = parseProvider(null, existing('VOICE_PROVIDER') || 'xai');
+	// D2: captured before applyEnvUpdatesInProcess() runs below — computing this after
+	// the mutation would always read back as unchanged and the restart prompt would
+	// never appear (chunk D1 makes process.env the live source of truth for ORIGIN too).
+	const prevOrigin = existing('ORIGIN');
 
 	const nextVoice = voiceUrlKey || (rotation ? prevVoiceKey : '');
 	const nextProvider = parseProvider(voiceProviderField, rotation ? prevProvider : 'xai');
@@ -173,5 +177,13 @@ export const POST: RequestHandler = async (event) => {
 		clearSessionCookie(event.cookies);
 	}
 
-	return json({ ok: true, restartRequired: true });
+	// D2: only ORIGIN genuinely requires a restart (adapter-node's handler reads it once
+	// at module load, so it can never hot-apply) — the client only offers "Restart now"
+	// when the server says it's actually needed.
+	const originChanged = nextOrigin !== prevOrigin;
+	return json({
+		ok: true,
+		restartRequired: originChanged,
+		...(originChanged ? { restartReasons: ['origin'] } : {})
+	});
 };

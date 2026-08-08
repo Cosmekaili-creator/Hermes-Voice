@@ -4,7 +4,10 @@ import {
 	MAX_HANDS_FREE_SILENCE_MS,
 	MAX_PERSONA_NAME_CHARS,
 	MIN_HANDS_FREE_SILENCE_MS,
-	normalizePersona
+	mergePersonaPatch,
+	normalizePersona,
+	normalizeVoiceId,
+	type VoicePersona
 } from './types';
 
 describe('normalizePersona', () => {
@@ -28,7 +31,8 @@ describe('normalizePersona', () => {
 			autoGreet: 'true',
 			handsFreeSilenceMs: 'abc',
 			defaultTalkMode: 'sometimes',
-			reviewConversationForMemory: 'yes'
+			reviewConversationForMemory: 'yes',
+			voiceId: 42
 		});
 		expect(result).toEqual(DEFAULT_PERSONA);
 	});
@@ -42,7 +46,8 @@ describe('normalizePersona', () => {
 			autoGreet: true,
 			handsFreeSilenceMs: 4500,
 			defaultTalkMode: 'handsfree',
-			reviewConversationForMemory: true
+			reviewConversationForMemory: true,
+			voiceId: 'nova-voice'
 		});
 		expect(result).toEqual({
 			assistantName: 'Nova',
@@ -52,7 +57,8 @@ describe('normalizePersona', () => {
 			autoGreet: true,
 			handsFreeSilenceMs: 4500,
 			defaultTalkMode: 'handsfree',
-			reviewConversationForMemory: true
+			reviewConversationForMemory: true,
+			voiceId: 'nova-voice'
 		});
 	});
 
@@ -145,5 +151,118 @@ describe('normalizePersona', () => {
 			expect(normalizePersona({ defaultTalkMode: 'auto' }).defaultTalkMode).toBeNull();
 			expect(normalizePersona({ defaultTalkMode: null }).defaultTalkMode).toBeNull();
 		});
+	});
+
+	describe('voiceId', () => {
+		it('defaults to null when absent', () => {
+			expect(normalizePersona({}).voiceId).toBeNull();
+		});
+
+		it('accepts a plain voice id', () => {
+			expect(normalizePersona({ voiceId: 'eve' }).voiceId).toBe('eve');
+		});
+	});
+});
+
+describe('normalizeVoiceId', () => {
+	it('lowercases uppercase input', () => {
+		expect(normalizeVoiceId('EVE')).toBe('eve');
+		expect(normalizeVoiceId('Marin-Voice')).toBe('marin-voice');
+	});
+
+	it('strips non-newline control characters and accepts the cleaned result', () => {
+		const dirty = 'ev' + String.fromCharCode(27) + 'e';
+		expect(normalizeVoiceId(dirty)).toBe('eve');
+	});
+
+	it('rejects embedded \\n outright — not silently stripped-and-passed', () => {
+		expect(normalizeVoiceId('eve\nXAI_API_KEY=evil')).toBeNull();
+	});
+
+	it('rejects embedded \\r outright — not silently stripped-and-passed', () => {
+		expect(normalizeVoiceId('eve\rXAI_API_KEY=evil')).toBeNull();
+	});
+
+	it('rejects a leading dot or hyphen per the regex', () => {
+		expect(normalizeVoiceId('.eve')).toBeNull();
+		expect(normalizeVoiceId('-eve')).toBeNull();
+	});
+
+	it('accepts up to the 64-char boundary and rejects beyond it', () => {
+		const ok = 'a'.repeat(64);
+		const tooLong = 'a'.repeat(65);
+		expect(normalizeVoiceId(ok)).toBe(ok);
+		expect(normalizeVoiceId(tooLong)).toBeNull();
+	});
+
+	it('rejects an empty string', () => {
+		expect(normalizeVoiceId('')).toBeNull();
+		expect(normalizeVoiceId('   ')).toBeNull();
+	});
+
+	it('rejects non-string input', () => {
+		expect(normalizeVoiceId(42)).toBeNull();
+		expect(normalizeVoiceId(null)).toBeNull();
+		expect(normalizeVoiceId(undefined)).toBeNull();
+		expect(normalizeVoiceId(true)).toBeNull();
+	});
+
+	it('trims surrounding whitespace', () => {
+		expect(normalizeVoiceId('  eve  ')).toBe('eve');
+	});
+});
+
+describe('mergePersonaPatch', () => {
+	const current: VoicePersona = {
+		assistantName: 'Nova',
+		addressName: 'Alex',
+		formalAddress: true,
+		patientSilence: true,
+		autoGreet: true,
+		handsFreeSilenceMs: 4500,
+		defaultTalkMode: 'handsfree',
+		reviewConversationForMemory: true,
+		voiceId: 'nova-voice'
+	};
+
+	it('a single-field patch leaves every other field exactly as current had them', () => {
+		const result = mergePersonaPatch(current, { autoGreet: false });
+		expect(result).toEqual({ ...current, autoGreet: false });
+	});
+
+	it('an unknown key in the body is ignored', () => {
+		const result = mergePersonaPatch(current, { notARealField: 'whatever' });
+		expect(result).toEqual(current);
+	});
+
+	it('a garbage-typed known key falls back to current, not DEFAULT_PERSONA', () => {
+		const result = mergePersonaPatch(current, { handsFreeSilenceMs: 'not-a-number' });
+		expect(result.handsFreeSilenceMs).toBe(current.handsFreeSilenceMs);
+		expect(result.handsFreeSilenceMs).not.toBe(DEFAULT_PERSONA.handsFreeSilenceMs);
+	});
+
+	it('non-object body leaves every field unchanged', () => {
+		expect(mergePersonaPatch(current, null)).toEqual(current);
+		expect(mergePersonaPatch(current, 'garbage')).toEqual(current);
+		expect(mergePersonaPatch(current, undefined)).toEqual(current);
+	});
+
+	it('updates only the present, validly-typed fields', () => {
+		const result = mergePersonaPatch(current, {
+			assistantName: 'Hermes',
+			handsFreeSilenceMs: 2000
+		});
+		expect(result).toEqual({ ...current, assistantName: 'Hermes', handsFreeSilenceMs: 2000 });
+	});
+
+	it('an explicit null for defaultTalkMode/voiceId clears the override (valid per type)', () => {
+		const result = mergePersonaPatch(current, { defaultTalkMode: null, voiceId: null });
+		expect(result.defaultTalkMode).toBeNull();
+		expect(result.voiceId).toBeNull();
+	});
+
+	it('a garbage-typed voiceId falls back to current rather than clearing it', () => {
+		const result = mergePersonaPatch(current, { voiceId: 'has invalid chars!!' });
+		expect(result.voiceId).toBe(current.voiceId);
 	});
 });

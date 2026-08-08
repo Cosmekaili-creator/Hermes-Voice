@@ -3,12 +3,25 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
+	import VoicePicker from '$lib/components/settings/VoicePicker.svelte';
 	import { getLocale, t, type Locale } from '$lib/i18n';
 	import LocaleSwitch from '$lib/components/LocaleSwitch.svelte';
 
 	let { data } = $props();
 
 	const locale = $derived((browser ? getLocale() : page.data.locale) as Locale);
+
+	type PersonaFields = {
+		assistantName: string;
+		addressName: string;
+		formalAddress: boolean;
+		patientSilence: boolean;
+		autoGreet: boolean;
+		handsFreeSilenceMs: number;
+		defaultTalkMode: 'ptt' | 'handsfree' | null;
+		reviewConversationForMemory: boolean;
+		voiceId: string | null;
+	};
 
 	type UserRow = {
 		id: string;
@@ -19,7 +32,7 @@
 		voiceKeyHint: string;
 		hermesApiKeyHint: string;
 		hermesSessionKeyHint: string;
-	};
+	} & PersonaFields;
 
 	let loading = $state(false);
 	let saving = $state(false);
@@ -40,6 +53,23 @@
 	let editHermesBase = $state('');
 	let editHermesKey = $state('');
 	let editSessionKey = $state('');
+
+	// Persona edit fields (chunk C). `editDefaultTalkMode` uses 'default' as the UI
+	// spelling of `null` (no persisted preference) — converted back on save.
+	let editShowPersona = $state(false);
+	let editAssistantName = $state('');
+	let editAddressName = $state('');
+	let editFormalAddress = $state(false);
+	let editPatientSilence = $state(false);
+	let editAutoGreet = $state(false);
+	let editHandsFreeSilenceMs = $state(1200);
+	let editDefaultTalkMode = $state<'default' | 'ptt' | 'handsfree'>('default');
+	let editReviewConversationForMemory = $state(false);
+	let editVoiceId = $state<string | null>(null);
+	/** Snapshot at edit-start — present-key-only diffing in saveEdit(), same discipline
+	 * as the settings modal's SettingsForm (chunk A): an untouched persona field is
+	 * never sent, so it can never silently overwrite a concurrent change. */
+	let editPersonaInitial: PersonaFields | null = null;
 
 	function errMsg(code: string | undefined): string {
 		if (!code) return t('users.error.generic', locale);
@@ -161,6 +191,28 @@
 		editHermesBase = u.hermesApiBase;
 		editHermesKey = '';
 		editSessionKey = '';
+
+		editShowPersona = false;
+		editAssistantName = u.assistantName;
+		editAddressName = u.addressName;
+		editFormalAddress = u.formalAddress;
+		editPatientSilence = u.patientSilence;
+		editAutoGreet = u.autoGreet;
+		editHandsFreeSilenceMs = u.handsFreeSilenceMs;
+		editDefaultTalkMode = u.defaultTalkMode ?? 'default';
+		editReviewConversationForMemory = u.reviewConversationForMemory;
+		editVoiceId = u.voiceId;
+		editPersonaInitial = {
+			assistantName: u.assistantName,
+			addressName: u.addressName,
+			formalAddress: u.formalAddress,
+			patientSilence: u.patientSilence,
+			autoGreet: u.autoGreet,
+			handsFreeSilenceMs: u.handsFreeSilenceMs,
+			defaultTalkMode: u.defaultTalkMode,
+			reviewConversationForMemory: u.reviewConversationForMemory,
+			voiceId: u.voiceId
+		};
 	}
 
 	async function saveEdit() {
@@ -169,13 +221,47 @@
 		message = '';
 		errorCode = '';
 		try {
-			const body: Record<string, string> = {
+			const body: Record<string, unknown> = {
 				label: editLabel,
 				hermesApiBase: editHermesBase
 			};
 			if (editVoiceKey) body.voiceKey = editVoiceKey;
 			if (editHermesKey) body.hermesApiKey = editHermesKey;
 			if (editSessionKey) body.hermesSessionKey = editSessionKey;
+
+			// Persona: only fields that actually changed since edit-start are sent (present-
+			// key discipline) — the PATCH route folds these in via mergePersonaPatch(), which
+			// leaves every unsent field exactly as it was.
+			if (editPersonaInitial) {
+				if (editAssistantName !== editPersonaInitial.assistantName) {
+					body.assistantName = editAssistantName;
+				}
+				if (editAddressName !== editPersonaInitial.addressName) {
+					body.addressName = editAddressName;
+				}
+				if (editFormalAddress !== editPersonaInitial.formalAddress) {
+					body.formalAddress = editFormalAddress;
+				}
+				if (editPatientSilence !== editPersonaInitial.patientSilence) {
+					body.patientSilence = editPatientSilence;
+				}
+				if (editAutoGreet !== editPersonaInitial.autoGreet) {
+					body.autoGreet = editAutoGreet;
+				}
+				if (editHandsFreeSilenceMs !== editPersonaInitial.handsFreeSilenceMs) {
+					body.handsFreeSilenceMs = editHandsFreeSilenceMs;
+				}
+				const nextTalkMode = editDefaultTalkMode === 'default' ? null : editDefaultTalkMode;
+				if (nextTalkMode !== editPersonaInitial.defaultTalkMode) {
+					body.defaultTalkMode = nextTalkMode;
+				}
+				if (editReviewConversationForMemory !== editPersonaInitial.reviewConversationForMemory) {
+					body.reviewConversationForMemory = editReviewConversationForMemory;
+				}
+				if (editVoiceId !== editPersonaInitial.voiceId) {
+					body.voiceId = editVoiceId;
+				}
+			}
 
 			const res = await fetch(`/api/owner/users/${editId}`, {
 				method: 'PATCH',
@@ -189,6 +275,7 @@
 				return;
 			}
 			editId = null;
+			editPersonaInitial = null;
 			message = t('users.saved', locale);
 			await refresh();
 		} finally {
@@ -376,12 +463,89 @@
 											autocomplete="off"
 										/>
 									</label>
+
+									<button
+										type="button"
+										class="btn ghost persona-toggle"
+										onclick={() => (editShowPersona = !editShowPersona)}
+									>
+										{editShowPersona ? '▾' : '▸'}
+										{t('users.persona.toggle', locale)}
+									</button>
+
+									{#if editShowPersona}
+										<fieldset class="persona-fieldset">
+											<legend>{t('users.persona.toggle', locale)}</legend>
+											<label>
+												<span>{t('users.persona.assistantName', locale)}</span>
+												<input bind:value={editAssistantName} autocomplete="off" />
+											</label>
+											<label>
+												<span>{t('users.persona.addressName', locale)}</span>
+												<input bind:value={editAddressName} autocomplete="off" />
+											</label>
+											<label class="checkbox">
+												<input type="checkbox" bind:checked={editFormalAddress} />
+												<span>{t('users.persona.formalAddress', locale)}</span>
+											</label>
+											<label class="checkbox">
+												<input type="checkbox" bind:checked={editPatientSilence} />
+												<span>{t('users.persona.patientSilence', locale)}</span>
+											</label>
+											<label class="checkbox">
+												<input type="checkbox" bind:checked={editAutoGreet} />
+												<span>{t('users.persona.autoGreet', locale)}</span>
+											</label>
+											<label>
+												<span>{t('users.persona.handsFreeSilenceMs', locale)}</span>
+												<input
+													type="number"
+													min="400"
+													max="15000"
+													step="50"
+													bind:value={editHandsFreeSilenceMs}
+												/>
+												<span class="field-hint"
+													>{t('users.persona.handsFreeSilenceHint', locale)}</span
+												>
+											</label>
+											<label>
+												<span>{t('users.persona.defaultTalkMode', locale)}</span>
+												<select bind:value={editDefaultTalkMode}>
+													<option value="default"
+														>{t('users.persona.talkModeDefault', locale)}</option
+													>
+													<option value="ptt">{t('mode.ptt', locale)}</option>
+													<option value="handsfree">{t('mode.handsfree', locale)}</option>
+												</select>
+											</label>
+											<label class="checkbox">
+												<input type="checkbox" bind:checked={editReviewConversationForMemory} />
+												<span>{t('users.persona.reviewConversationForMemory', locale)}</span>
+											</label>
+											<p class="field-hint field-hint--warn">
+												{t('users.persona.reviewConversationHint', locale)}
+											</p>
+											<VoicePicker
+												provider={data.provider}
+												voiceId={editVoiceId}
+												onSelect={(id) => (editVoiceId = id)}
+												disabled={saving}
+											/>
+										</fieldset>
+									{/if}
+
 									<div class="row-actions">
 										<button type="button" class="btn" disabled={saving} onclick={saveEdit}
 											>{t('users.save', locale)}</button
 										>
-										<button type="button" class="btn ghost" onclick={() => (editId = null)}
-											>{t('wizard.back', locale)}</button
+										<button
+											type="button"
+											class="btn ghost"
+											onclick={() => {
+												editId = null;
+												editPersonaInitial = null;
+											}}>{t('wizard.back', locale)}</button
 										>
 									</div>
 								</div>
@@ -594,6 +758,54 @@
 		display: flex;
 		gap: 0.45rem;
 		align-items: center;
+	}
+
+	select {
+		min-height: 2.3rem;
+		padding: 0.4rem 0.65rem;
+		border-radius: 0.55rem;
+		border: 1px solid rgba(202, 253, 255, 0.28);
+		background: rgba(3, 10, 12, 0.45);
+		color: var(--ink);
+		font: inherit;
+	}
+
+	.persona-toggle {
+		align-self: flex-start;
+		margin-top: 0.2rem;
+	}
+
+	.persona-fieldset {
+		display: flex;
+		flex-direction: column;
+		gap: 0.65rem;
+		margin: 0.4rem 0 0;
+		padding: 0.75rem;
+		border: 1px solid rgba(202, 253, 255, 0.18);
+		border-radius: 0.6rem;
+	}
+
+	.persona-fieldset legend {
+		padding: 0 0.35rem;
+		font-size: 0.85rem;
+		color: var(--muted);
+	}
+
+	label.checkbox {
+		flex-direction: row;
+		align-items: center;
+		gap: 0.5rem;
+	}
+
+	.field-hint {
+		margin: 0;
+		font-size: 0.78rem;
+		color: var(--muted);
+		line-height: 1.4;
+	}
+
+	.field-hint--warn {
+		color: #ffd98a;
 	}
 
 	.inline input {

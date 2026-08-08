@@ -68,8 +68,11 @@ export const fr = {
 	'error.networkFailed': 'Erreur réseau — {assistant} Voice injoignable',
 	'error.sessionForbidden': 'Session refusée — rechargez la page',
 	'error.sessionRateLimited': 'Trop de tentatives — patientez un instant',
+	'error.voiceFallbackApplied':
+		"La voix choisie n'était pas disponible, la voix par défaut a donc été utilisée à la place",
 
 	'gate.accessRestricted': 'Accès restreint',
+	'gate.setupLink': 'Configuration initiale',
 
 	'wizard.brand': 'HERMES',
 	'wizard.title': 'Configuration',
@@ -146,6 +149,8 @@ export const fr = {
 	'wizard.error.setup_locked': 'Configuration verrouillée',
 	'wizard.error.invalid_token': 'Jeton de configuration invalide',
 	'wizard.error.generic': 'Une erreur s’est produite',
+	'wizard.error.restart_unsupported': 'Le redémarrage automatique n’est pas activé sur ce serveur',
+	'wizard.error.restart_failed': 'Impossible de contacter le point de terminaison de redémarrage',
 
 	'health.title': 'Santé propriétaire',
 	'health.voice': 'Accès vocal',
@@ -219,5 +224,64 @@ export const fr = {
 	'users.error.hermes_unreachable': 'Hermes injoignable',
 	'users.error.hermes_unhealthy': 'Échec du contrôle de santé Hermes',
 	'users.error.hermes_unauthorized': 'Clé API Hermes rejetée',
-	'users.error.missing_key': 'La clé API est requise'
+	'users.error.missing_key': 'La clé API est requise',
+
+	'users.persona.toggle': 'Personnalité',
+	'users.persona.assistantName': "Nom de l'assistant",
+	'users.persona.addressName': "Nom de l'utilisateur (comment {assistant} s'adresse à lui)",
+	'users.persona.formalAddress': 'Vouvoiement',
+	'users.persona.patientSilence': 'Patient face aux pauses en cours de phrase',
+	'users.persona.autoGreet': 'Saluer automatiquement à la connexion (mains libres)',
+	'users.persona.handsFreeSilenceMs': 'Délai de silence mains libres (ms)',
+	'users.persona.handsFreeSilenceHint': 'Limité entre 400 et 15000 ms',
+	'users.persona.defaultTalkMode': 'Mode de parole par défaut',
+	'users.persona.talkModeDefault': "Défaut de l'application (choix propre à l'utilisateur)",
+	'users.persona.reviewConversationForMemory':
+		'Analyser les conversations pour la mémoire (opt-in)',
+	'users.persona.reviewConversationHint':
+		"Posture de confidentialité nettement différente : les paroles exactes de l'utilisateur sont transcrites et envoyées au backend Hermes propre à cet utilisateur pour une extraction de mémoire, et non plus seulement une paraphrase que le modèle vocal choisit de transmettre. Informez l'utilisateur avant d'activer cette option.",
+
+	'settings.open': 'Réglages',
+	'settings.sectionProvider': 'Fournisseur vocal',
+	'settings.sectionHermes': 'Connexion Hermes',
+	'settings.close': 'Fermer',
+	'settings.unavailableTitle': 'Réglages indisponibles',
+	'settings.unavailableBody':
+		'Les réglages ne peuvent pas être modifiés pour le moment — terminez la configuration initiale, ou connectez-vous en tant que propriétaire.',
+	'settings.save': 'Enregistrer',
+	'settings.saving': 'Enregistrement…',
+	'settings.saved': 'Enregistré',
+	'settings.blankKeepHint': 'Laisser vide pour conserver (se termine par {hint})',
+	'settings.error.generic': "Une erreur s'est produite",
+	'settings.error.invalid_section': 'Section de réglages invalide',
+	'settings.error.field_not_in_section': 'Ce champ ne peut pas être modifié depuis ici',
+	'settings.error.empty_field': 'Ce champ ne peut pas être enregistré vide',
+	'settings.error.invalid_provider': 'Fournisseur vocal invalide',
+	'settings.error.invalid_voice_id': 'Voix invalide',
+	'settings.error.invalid_session_key': 'Clé de session Hermes invalide',
+	'settings.error.bindings_no_owner':
+		'Aucun propriétaire trouvé — vérifiez le fichier des utilisateurs',
+	'settings.voice.label': 'Voix',
+	'settings.voice.providerDefault': 'Voix par défaut du fournisseur',
+	'settings.voice.load': 'Charger les voix',
+	'settings.voice.loading': 'Chargement…',
+	'settings.voice.loadError': 'Impossible de charger les voix',
+	'settings.voice.nextSessionNote':
+		"Un changement de voix s'applique à votre prochaine session, pas à l'appel en cours.",
+	'settings.voice.reconnectNow': 'Reconnecter maintenant',
+	'settings.voice.openaiHint': "Optimisées pour l'anglais ; marin et cedar sont recommandées.",
+	'settings.voice.recommended': 'Recommandée',
+	'settings.voice.multiUserNotice':
+		'Les voix sont définies par utilisateur en mode multi-utilisateur — gérez-les dans',
+	'settings.voice.fallbackNote':
+		"Affichage d'une liste par défaut limitée — le catalogue en direct n'a pas pu être chargé.",
+
+	'settings.saveRestart': 'Redémarrer le service',
+	'settings.restartWarning':
+		"Le redémarrage prend quelques secondes. L'audio en direct n'est pas interrompu, mais toute requête en cours échouera et aucune nouvelle session ne pourra démarrer tant qu'il n'est pas revenu.",
+	'settings.restartConfirm': 'Redémarrer le service Hermes Voice maintenant ?',
+	'settings.restartStopping': 'Arrêt en cours…',
+	'settings.restartWaiting': 'En attente du redémarrage…',
+	'settings.restartOk': 'De nouveau en ligne',
+	'settings.restartTimeout': 'Impossible de confirmer le redémarrage — vérifiez le service'
 } satisfies Messages;

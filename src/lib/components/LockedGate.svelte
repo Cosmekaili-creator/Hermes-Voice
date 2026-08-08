@@ -1,8 +1,13 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
+	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { getLocale, t, type Locale } from '$lib/i18n';
 	import LocaleSwitch from './LocaleSwitch.svelte';
+
+	type SetupMode = 'bootstrap' | 'ops_locked' | 'complete';
+
+	let { setupMode }: { setupMode?: SetupMode } = $props();
 
 	const locale = $derived((browser ? getLocale() : page.data.locale) as Locale);
 </script>
@@ -15,6 +20,14 @@
 	<div class="copy">
 		<p class="brand">HERMES</p>
 		<h1>{t('gate.accessRestricted', locale)}</h1>
+		<!-- setupMode is already unauthenticated-readable via GET /api/setup/status, so
+		     surfacing it here (chunk A10) leaks nothing new — closes the "fresh admin has
+		     no idea /setup exists" gap. -->
+		{#if setupMode === 'bootstrap'}
+			<a class="setup-link" href={resolve('/setup')}>{t('gate.setupLink', locale)}</a>
+		{:else if setupMode === 'ops_locked'}
+			<p class="hint">{t('wizard.opsLocked', locale)}</p>
+		{/if}
 	</div>
 </div>
 
@@ -94,5 +107,24 @@
 		font-size: clamp(1.15rem, 3.5vw, 1.5rem);
 		font-weight: 500;
 		letter-spacing: 0.02em;
+	}
+
+	.hint {
+		margin: 0.5rem 0 0;
+		max-width: 26rem;
+		color: #8eb8bc;
+		font-size: 0.85rem;
+		line-height: 1.45;
+	}
+
+	.setup-link {
+		margin-top: 0.5rem;
+		color: #5ee7ff;
+		font-size: 0.9rem;
+		text-decoration: none;
+	}
+
+	.setup-link:hover {
+		text-decoration: underline;
 	}
 </style>

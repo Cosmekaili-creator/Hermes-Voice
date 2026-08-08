@@ -1,9 +1,10 @@
 import { expect, test } from '@playwright/test';
 
 /**
- * Smoke suite — runs against a preview server with only VOICE_URL_KEY set
- * (no xAI/OpenAI provider keys). Covers health, the locked gate UI, the
- * same-origin auth failure path, and CSP presence.
+ * Smoke suite — runs against a preview server with VOICE_URL_KEY and
+ * SETUP_COMPLETE=1 set (no xAI/OpenAI provider keys, no ALLOW_SELF_RESTART).
+ * Covers health, the locked gate UI, the same-origin auth failure path, CSP
+ * presence, and (chunk A) the settings pill/gear + modal.
  */
 
 test('GET /health returns 200 + ok', async ({ request }) => {
@@ -36,11 +37,24 @@ test('GET / sends a content-security-policy header', async ({ request, baseURL }
 	expect(res.headers()['content-security-policy']).toBeTruthy();
 });
 
+// A12 guard: SETUP_COMPLETE=1 in the e2e env (playwright.config.ts) moves this suite
+// from `ops_locked` to `complete` mode — confirm /setup can't silently be left wide
+// open to anonymous bootstrap by that change. Unauthenticated + complete must show the
+// "already configured, sign in to rotate" copy, never the bootstrap unlock/wizard form.
+test('GET /setup unauthenticated shows the complete-locked state, not the bootstrap form', async ({
+	page
+}) => {
+	await page.goto('/setup');
+	await expect(page.getByText('Setup complete')).toBeVisible();
+	await expect(page.getByRole('link', { name: 'Open Lounge' })).toBeVisible();
+	await expect(page.getByRole('textbox')).toHaveCount(0);
+});
+
 test.describe('lounge', () => {
 	// warm() fires /api/session, which 500s here (no provider key) — the Lounge must
 	// still render. Do not assert on status text; it depends on mint timing.
 
-	test('renders the talk button, primer, composer, and no provider badge or captions', async ({
+	test('renders the talk button, primer, composer, and the provider pill even when mint fails', async ({
 		page
 	}) => {
 		await page.goto('/?k=ci-test-key');
@@ -61,8 +75,16 @@ test.describe('lounge', () => {
 		await expect(input).toBeEnabled();
 		await expect(page.locator('.composer__send')).toBeDisabled();
 
-		// Item 9: no provider key configured ⇒ mint fails ⇒ badge never renders.
-		await expect(page.locator('.provider-badge')).toHaveCount(0);
+		// Chunk A8: the pill now renders unconditionally (SSR `provider` prop), not gated
+		// on a successful mint — this is precisely the case it exists for: a broken/absent
+		// provider key is exactly when settings are most needed. The e2e synthetic
+		// single-user binding (?k=ci-test-key) has role: 'owner', so it renders as a button.
+		const pill = page.locator('.provider-badge');
+		await expect(pill).toBeVisible();
+		await expect(pill).toHaveText(/xAI/);
+
+		// And the gear beside it (owner-only settings entry point for the Hermes section).
+		await expect(page.locator('.settings-gear')).toBeVisible();
 
 		// Item 3: captions don't add idle chrome.
 		await expect(page.locator('.captions')).toHaveCount(0);
@@ -82,5 +104,55 @@ test.describe('lounge', () => {
 
 		await page.reload();
 		await expect(page.locator('.primer')).toBeHidden();
+	});
+});
+
+test.describe('settings modal (chunk A)', () => {
+	// ?k=ci-test-key is a single-user synthetic binding, always role: 'owner' — the pill
+	// and gear render as buttons for it (see the "renders ... even when mint fails" test
+	// above for the non-owner-vs-owner rendering distinction).
+
+	test('clicking the pill opens the modal on the provider section', async ({ page }) => {
+		await page.goto('/?k=ci-test-key');
+		await page.locator('.provider-badge').click();
+		const dialog = page.locator('dialog.settings-modal');
+		await expect(dialog).toBeVisible();
+		await expect(dialog.getByRole('heading', { name: 'Voice provider' })).toBeVisible();
+	});
+
+	test('clicking the gear opens the modal on the Hermes section', async ({ page }) => {
+		await page.goto('/?k=ci-test-key');
+		await page.locator('.settings-gear').click();
+		const dialog = page.locator('dialog.settings-modal');
+		await expect(dialog).toBeVisible();
+		await expect(dialog.getByRole('heading', { name: 'Hermes connection' })).toBeVisible();
+	});
+
+	test('the close button dismisses the modal', async ({ page }) => {
+		await page.goto('/?k=ci-test-key');
+		await page.locator('.settings-gear').click();
+		const dialog = page.locator('dialog.settings-modal');
+		await expect(dialog).toBeVisible();
+		await page.getByRole('button', { name: 'Close' }).click();
+		await expect(dialog).toBeHidden();
+	});
+
+	test('Esc dismisses the modal', async ({ page }) => {
+		await page.goto('/?k=ci-test-key');
+		await page.locator('.provider-badge').click();
+		const dialog = page.locator('dialog.settings-modal');
+		await expect(dialog).toBeVisible();
+		await page.keyboard.press('Escape');
+		await expect(dialog).toBeHidden();
+	});
+
+	// D3/D5: the self-restart action is gated behind ALLOW_SELF_RESTART, which is
+	// deliberately absent from MANAGED_ENV_KEYS (can never be set from a browser) and is
+	// unset in this e2e env — this must remain true after the restart UI lands too.
+	test('no restart action is reachable when ALLOW_SELF_RESTART is unset', async ({ page }) => {
+		await page.goto('/?k=ci-test-key');
+		await page.locator('.settings-gear').click();
+		await expect(page.locator('dialog.settings-modal')).toBeVisible();
+		await expect(page.getByRole('button', { name: /restart/i })).toHaveCount(0);
 	});
 });

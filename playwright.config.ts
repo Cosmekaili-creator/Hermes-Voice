@@ -28,7 +28,13 @@ export default defineConfig({
 			HOST: '127.0.0.1',
 			PORT: String(PORT),
 			ORIGIN: BASE_URL,
-			VOICE_URL_KEY: 'ci-test-key'
+			VOICE_URL_KEY: 'ci-test-key',
+			// Moves the e2e suite from `ops_locked` to `complete` mode (chunk A12) — the
+			// settings pill/gear (chunk A) only render/work once setup is complete. Audited
+			// the existing suite: none of it asserts on setup mode, so this is safe. See
+			// smoke.spec.ts's "locked gate stays locked when unauthenticated" test for the
+			// guard that this change can't silently leave setup wide open in CI.
+			SETUP_COMPLETE: '1'
 		}
 	}
 });

@@ -289,6 +289,13 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 	let playback: PlaybackHandle | null = null;
 	let client: RealtimeClient | null = null;
 	let token = $state.raw<MintResult | null>(null);
+	/**
+	 * Non-fatal notice key set when the connect-time voice fallback (see
+	 * `ensureRealtime()`) actually fires — i.e. a per-binding `voiceId` was rejected by
+	 * the provider and the session fell back to the default voice instead of dying.
+	 * Cleared on the next connect that doesn't need the fallback, and on destroy().
+	 */
+	let voiceFallbackNotice = $state<string | null>(null);
 	let thinkTimer: ReturnType<typeof setTimeout> | null = null;
 	let waitTickTimer: ReturnType<typeof setInterval> | null = null;
 	let warmRecheckTimer: ReturnType<typeof setInterval> | null = null;
@@ -1301,6 +1308,18 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		}
 	}
 
+	/**
+	 * Provider connect-time error text plausibly referencing the realtime `voice` field
+	 * (e.g. an invalid/unsupported per-binding voiceId rejected server-side by the
+	 * provider). Deliberately loose — this only gates a one-shot, harmless-if-wrong
+	 * fallback retry (see ensureRealtime's voice-fallback branch below), never a hard
+	 * failure decision.
+	 */
+	function looksLikeVoiceFieldError(err: unknown): boolean {
+		const message = err instanceof Error ? err.message : typeof err === 'string' ? err : '';
+		return /\bvoice\b/i.test(message);
+	}
+
 	async function ensureRealtime(): Promise<RealtimeClient> {
 		if (client?.open && client.ready && tokenFresh()) return client;
 		if (realtimeInFlight) return realtimeInFlight;
@@ -1318,69 +1337,99 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 			}
 			if (destroyed) throw new Error('destroyed');
 			if (!token) throw new VoiceAppError('error.sessionUnavailable', true);
+			const mintedToken = token;
 
-			const rt = createRealtimeClientFor(
-				token.provider,
-				{
-					onEvent: (ev) => handleServerEvent(ev, turnId),
-					onError: (message) => {
-						if (destroyed) return;
-						if (state !== 'idle' || handsfreeArmed) {
-							// Transport-level failure — the socket/peer connection is dead or
-							// dying. Force the same full teardown+reconnect as onClose (below)
-							// rather than quietly reverting to idle while holding a broken
-							// client/token, which previously left the app looking "fine" on a
-							// connection that could no longer deliver anything.
-							const mapped = CONNECT_ERROR_CODES[message as keyof typeof CONNECT_ERROR_CODES];
-							if (mapped) fail(mapped, { reconnect: true });
-							else failRaw(message, { reconnect: true });
-						}
-					},
-					onClose: () => {
-						if (destroyed) return;
-						if (
-							state === 'listening' ||
-							state === 'thinking' ||
-							state === 'speaking' ||
-							handsfreeArmed
-						) {
-							fail('error.connectionLost', { reconnect: true });
-						}
-					},
-					onRemoteStream: (stream) => {
-						if (destroyed) return;
-						void ensureAudio()
-							.then(() => {
-								playback?.attachRemoteStream(stream);
-							})
-							.catch(() => {
-								/* ignore */
-							});
+			const handlers = {
+				onEvent: (ev: RealtimeServerEvent) => handleServerEvent(ev, turnId),
+				onError: (message: string) => {
+					if (destroyed) return;
+					if (state !== 'idle' || handsfreeArmed) {
+						// Transport-level failure — the socket/peer connection is dead or
+						// dying. Force the same full teardown+reconnect as onClose (below)
+						// rather than quietly reverting to idle while holding a broken
+						// client/token, which previously left the app looking "fine" on a
+						// connection that could no longer deliver anything.
+						const mapped = CONNECT_ERROR_CODES[message as keyof typeof CONNECT_ERROR_CODES];
+						if (mapped) fail(mapped, { reconnect: true });
+						else failRaw(message, { reconnect: true });
 					}
 				},
-				{
-					model: token.model || undefined,
-					voice: token.voice || undefined,
+				onClose: () => {
+					if (destroyed) return;
+					if (
+						state === 'listening' ||
+						state === 'thinking' ||
+						state === 'speaking' ||
+						handsfreeArmed
+					) {
+						fail('error.connectionLost', { reconnect: true });
+					}
+				},
+				onRemoteStream: (stream: MediaStream) => {
+					if (destroyed) return;
+					void ensureAudio()
+						.then(() => {
+							playback?.attachRemoteStream(stream);
+						})
+						.catch(() => {
+							/* ignore */
+						});
+				}
+			};
+
+			/** Build a client for `mintedToken` with the given voice and attempt to connect it. */
+			async function attemptConnect(voiceOverride: string | undefined): Promise<RealtimeClient> {
+				const rt = createRealtimeClientFor(mintedToken.provider, handlers, {
+					model: mintedToken.model || undefined,
+					voice: voiceOverride,
 					// Model id itself is resolved provider-side (each provider's own client.ts
 					// falls back to its own default transcription model) — this only signals
 					// "on" for a binding that opted in. See VoicePersona.reviewConversationForMemory.
 					inputTranscription: persona.reviewConversationForMemory ? { model: '' } : null
+				});
+				try {
+					const instructions = buildHermesVoiceInstructions(getLocale(), persona);
+					const vad = turnDetectionForMode();
+					if (rt.usesMediaTracks) {
+						const ctx = await ensureAudio();
+						const mic = await ensureCapture(ctx);
+						await rt.connect(mintedToken.value, instructions, vad, { localStream: mic.stream });
+					} else {
+						await rt.connect(mintedToken.value, instructions, vad);
+					}
+					return rt;
+				} catch (err) {
+					rt.close();
+					throw err;
 				}
-			);
+			}
 
+			const caps = CAPABILITY_MATRIX[mintedToken.provider];
+			const requestedVoice = mintedToken.voice || caps.defaultVoice;
+
+			let rt: RealtimeClient;
 			try {
-				const instructions = buildHermesVoiceInstructions(getLocale(), persona);
-				const vad = turnDetectionForMode();
-				if (rt.usesMediaTracks) {
-					const ctx = await ensureAudio();
-					const mic = await ensureCapture(ctx);
-					await rt.connect(token.value, instructions, vad, { localStream: mic.stream });
-				} else {
-					await rt.connect(token.value, instructions, vad);
-				}
+				rt = await attemptConnect(mintedToken.voice || undefined);
+				voiceFallbackNotice = null;
 			} catch (err) {
-				rt.close();
-				connectFailure(err);
+				// Connect-time voice fallback (safety net): a bad per-binding voiceId must
+				// degrade gracefully, not silently kill the assistant. Retry once, same
+				// minted token, with the provider default voice — only when the failure
+				// plausibly references the voice field and we weren't already requesting
+				// the default (no point retrying with an identical value).
+				if (requestedVoice !== caps.defaultVoice && looksLikeVoiceFieldError(err)) {
+					try {
+						rt = await attemptConnect(caps.defaultVoice);
+						console.warn(
+							`Hermes Voice: voice "${requestedVoice}" rejected by the provider, fell back to the default voice`
+						);
+						voiceFallbackNotice = 'error.voiceFallbackApplied';
+					} catch (fallbackErr) {
+						connectFailure(fallbackErr);
+					}
+				} else {
+					connectFailure(err);
+				}
 			}
 			if (destroyed) {
 				rt.close();
@@ -1957,6 +2006,26 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		client.updateInstructions(buildHermesVoiceInstructions(getLocale(), persona));
 	}
 
+	/**
+	 * Owner-triggered "Reconnect now" (settings VoicePicker, chunk B11) — drop the
+	 * current client/token and re-warm with a fresh mint, so a just-saved voice change
+	 * applies to a new session immediately instead of the owner wondering whether it
+	 * worked. A no-op mid-turn: never interrupts an in-flight response or Hermes call —
+	 * the change simply applies on the next natural reconnect/session instead.
+	 */
+	async function forceReconnect(): Promise<void> {
+		if (destroyed || busy || state !== 'idle' || hermesBridgeActive || handsfreeArmed) return;
+		try {
+			client?.close();
+		} catch {
+			/* ignore */
+		}
+		client = null;
+		token = null;
+		voiceFallbackNotice = null;
+		await warm();
+	}
+
 	function destroy() {
 		destroyed = true;
 		busy = false;
@@ -1997,6 +2066,7 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		client?.close();
 		client = null;
 		token = null;
+		voiceFallbackNotice = null;
 		micAnalyser = null;
 		playAnalyser = null;
 		if (audioCtx) {
@@ -2066,12 +2136,16 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		get playAnalyser() {
 			return playAnalyser;
 		},
+		get voiceFallbackNotice() {
+			return voiceFallbackNotice;
+		},
 		warm,
 		toggle,
 		setTalkMode,
 		retryMic,
 		sendText,
 		refreshInstructions,
+		forceReconnect,
 		destroy
 	};
 }

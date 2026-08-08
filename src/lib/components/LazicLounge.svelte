@@ -8,6 +8,7 @@
 	import { markMicPrimed, shouldPrimeMic } from '$lib/voice/micPrimer';
 	import { drawLazicLounge, type VizQuality } from '$lib/viz/lazicLounge';
 	import { createScreenWakeLock } from '$lib/wakeLock';
+	import SettingsModal from './settings/SettingsModal.svelte';
 	import LocaleSwitch from './LocaleSwitch.svelte';
 	import MicPrimer from './MicPrimer.svelte';
 	import TalkModeSwitch from './TalkModeSwitch.svelte';
@@ -18,7 +19,19 @@
 		openai: 'OpenAI'
 	};
 
-	let { persona = DEFAULT_PERSONA }: { persona?: VoicePersona } = $props();
+	let {
+		persona = DEFAULT_PERSONA,
+		provider,
+		isOwner = false
+	}: { persona?: VoicePersona; provider?: ProviderId; isOwner?: boolean } = $props();
+
+	let settingsOpen = $state(false);
+	let settingsSection = $state<'provider' | 'hermes'>('provider');
+
+	function openSettings(section: 'provider' | 'hermes') {
+		settingsSection = section;
+		settingsOpen = true;
+	}
 
 	/**
 	 * Explicit third arg on every t() call in this component (and inline child components
@@ -251,10 +264,33 @@
 		<TalkModeSwitch mode={demo.talkMode} onChange={(m) => demo.setTalkMode(m)} />
 	</div>
 	<div class="locale-corner">
-		{#if demo.provider}
-			<p class="provider-badge">
+		<!-- Rendered unconditionally, not gated on demo.provider — today the pill only
+		     appeared after a successful mint, i.e. it disappeared exactly when a broken
+		     key made settings most necessary. `provider` (SSR value from +page.server.ts)
+		     seeds the label; `demo.provider` overrides once a session actually mints. -->
+		{#if isOwner}
+			<button type="button" class="provider-badge" onclick={() => openSettings('provider')}>
 				<span class="provider-badge__label">{pt('meta.provider')}: </span>{PROVIDER_LABELS[
-					demo.provider
+					demo.provider ?? provider ?? 'xai'
+				]}
+			</button>
+			<button
+				type="button"
+				class="settings-gear"
+				aria-label={pt('settings.open')}
+				onclick={() => openSettings('hermes')}
+			>
+				<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
+					<path
+						fill="currentColor"
+						d="M19.14 12.94a7.14 7.14 0 0 0 .06-.94 7.14 7.14 0 0 0-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.3 7.3 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.84a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.5a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.42.32.66.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.04.24.25.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.24.1.52.02.66-.22l1.92-3.32a.5.5 0 0 0-.12-.64Zm-7.14 2.44a3.38 3.38 0 1 1 0-6.76 3.38 3.38 0 0 1 0 6.76Z"
+					/>
+				</svg>
+			</button>
+		{:else if demo.provider ?? provider}
+			<p class="provider-badge provider-badge--inert">
+				<span class="provider-badge__label">{pt('meta.provider')}: </span>{PROVIDER_LABELS[
+					demo.provider ?? provider ?? 'xai'
 				]}
 			</p>
 		{/if}
@@ -289,6 +325,12 @@
 	<div class="center">
 		<p class="brand">{persona.assistantName.toUpperCase()}</p>
 		<p class="status" aria-live="polite">{demo.statusLabel}</p>
+		{#if demo.voiceFallbackNotice}
+			<!-- B12 connect-time voice fallback: a rejected per-binding voice degraded
+			     gracefully to the provider default instead of killing the session — this
+			     is the non-fatal notice surfacing that. -->
+			<p class="status-notice" aria-live="polite">{pt(demo.voiceFallbackNotice as MessageKey)}</p>
+		{/if}
 		{#if demo.statusKey === 'error.micDenied'}
 			<button type="button" class="retry" onclick={() => demo.retryMic()}
 				>{pt('button.retryMic')}</button
@@ -335,6 +377,16 @@
 			assistantName={persona.assistantName}
 		/>
 	</div>
+
+	{#if isOwner}
+		<SettingsModal
+			open={settingsOpen}
+			section={settingsSection}
+			{isOwner}
+			onClose={() => (settingsOpen = false)}
+			onReconnect={() => demo.forceReconnect()}
+		/>
+	{/if}
 </div>
 
 <style>
@@ -457,10 +509,63 @@
 		background: rgba(4, 20, 24, 0.55);
 		backdrop-filter: blur(6px);
 		color: var(--muted);
+		font: inherit;
 		font-size: 0.66rem;
 		font-weight: 500;
 		letter-spacing: 0.08em;
 		opacity: 0.75;
+	}
+
+	/* Interactive (owner-only) variant — a <button>, not the inert <p> the non-owner
+	   fallback still renders (see .provider-badge--inert below). */
+	button.provider-badge {
+		cursor: pointer;
+		transition:
+			border-color 0.15s ease,
+			opacity 0.15s ease;
+	}
+
+	button.provider-badge:hover {
+		opacity: 1;
+		border-color: rgba(202, 253, 255, 0.4);
+	}
+
+	button.provider-badge:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
+	}
+
+	.provider-badge--inert {
+		cursor: default;
+	}
+
+	.settings-gear {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 1.8rem;
+		height: 1.8rem;
+		padding: 0;
+		border: 1px solid rgba(202, 253, 255, 0.22);
+		border-radius: 999px;
+		background: rgba(4, 20, 24, 0.55);
+		backdrop-filter: blur(6px);
+		color: var(--muted);
+		cursor: pointer;
+		opacity: 0.75;
+		transition:
+			border-color 0.15s ease,
+			opacity 0.15s ease;
+	}
+
+	.settings-gear:hover {
+		opacity: 1;
+		border-color: rgba(202, 253, 255, 0.4);
+	}
+
+	.settings-gear:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
 	}
 
 	/* Announced by every screen reader, works on touch, needs no ARIA.
@@ -618,6 +723,16 @@
 		-webkit-box-orient: vertical;
 		-webkit-line-clamp: 2;
 		line-clamp: 2;
+	}
+
+	.status-notice {
+		margin: -0.2rem 0 0;
+		max-width: 20rem;
+		color: #ffd98a;
+		font-size: 0.78rem;
+		letter-spacing: 0.02em;
+		line-height: 1.3;
+		opacity: 0.9;
 	}
 
 	.status-timer {

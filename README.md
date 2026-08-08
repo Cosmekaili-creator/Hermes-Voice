@@ -7,26 +7,38 @@ Private **realtime voice** web UI for [Hermes Agent](https://github.com/NousRese
 
 - **Lounge** — press-to-talk (default) or hands-free (server VAD), or type instead; mic + playback visualizer
 - **Providers** — [xAI](https://x.ai/) realtime (default) or [OpenAI](https://openai.com/) Realtime via `VOICE_PROVIDER`
+- **Voice choice** — per-binding voice in multi-user mode (`/owner/users`), or a single owner-editable default in single-user mode; xAI's list is fetched live from its voice catalog, OpenAI's is a small curated list — never a mid-call hot-swap, and a bad pick degrades to the provider default instead of failing
+- **In-app settings** — an owner-only pill (provider) and gear icon in the Lounge open a settings modal for provider/keys/voice or the Hermes connection, no `/setup` round-trip needed for routine changes
 - **Hermes bridge** — email, calendar, contacts, and other tool work via `ask_hermes` → your Hermes API
 - **Auth** — URL key gate (`?k=`); optional multi-user with one Hermes **profile** per Voice user
-- **Persona** — per-binding assistant name, address style, pacing, and auto-greet-on-connect; each Voice user can feel distinct without a fork
+- **Persona** — per-binding assistant name, address style, pacing, auto-greet-on-connect, and voice; editable from `/owner/users`, not just hand-edited into `data/bindings.json`
 - **Memory review** — opt-in per binding: capture both sides of a hands-free conversation and hand the transcript to that user's own Hermes profile for a dedicated memory-extraction pass, instead of relying on incidental per-turn tool-calling
 - **i18n** — UI locales `en` / `fr` / `es` (detect + manual override)
-- **Setup** — optional WebUI wizard (`SETUP_TOKEN`) + owner health / user admin
+- **Setup** — optional WebUI wizard (`SETUP_TOKEN`) + owner health / user admin + owner-triggered self-restart (`ALLOW_SELF_RESTART`, opt-in, off by default)
 
 Bring your own provider key and Hermes instance.
 
 ## Screenshots
 
 <p align="center">
-  <img src="graphics/screenshots/main-interface.jpg" alt="Hermes Voice Lounge — idle with press-to-talk" width="280" />
+  <img src="graphics/screenshots/main-interface.jpg" alt="Hermes Voice Lounge — idle, with the owner-only provider pill and settings gear" width="260" />
   &nbsp;&nbsp;
-  <img src="graphics/screenshots/voice-active.jpg" alt="Hermes Voice Lounge — active listening / speaking ring" width="280" />
+  <img src="graphics/screenshots/voice-active.jpg" alt="Hermes Voice Lounge — active listening / speaking ring" width="260" />
+  &nbsp;&nbsp;
+  <img src="graphics/screenshots/provider-settings.jpg" alt="Settings modal — voice provider, key, and voice picker" width="260" />
 </p>
 
 <p align="center">
-  <em>Left:</em> Lounge at rest (talk mode + language).
-  <em>Right:</em> Live session with the Lazic visualizer.
+  <img src="graphics/screenshots/hermes-settings.jpg" alt="Settings modal — Hermes connection" width="260" />
+  &nbsp;&nbsp;
+  <img src="graphics/screenshots/users-admin.jpg" alt="Owner user admin — per-binding voice key and Hermes connection" width="260" />
+  &nbsp;&nbsp;
+  <img src="graphics/screenshots/owner-health.jpg" alt="Owner health — provider mint and per-binding Hermes readiness" width="260" />
+</p>
+
+<p align="center">
+  <em>Top:</em> Lounge at rest with the settings pill/gear · live session · provider settings.
+  <em>Bottom:</em> Hermes connection settings · multi-user admin · owner health.
 </p>
 
 ## License
@@ -89,7 +101,9 @@ HERMES_SESSION_KEY=agent:main:voice
 | **xAI** (default) | `XAI_API_KEY`                              | model `grok-voice-latest`, voice `eve` |
 | **OpenAI**        | `VOICE_PROVIDER=openai` + `OPENAI_API_KEY` | model `gpt-realtime`, voice `alloy`    |
 
-Optional OpenAI overrides: `OPENAI_REALTIME_MODEL`, `OPENAI_VOICE` (resolved on the server; returned non-secret on `POST /api/session`). The setup wizard stays xAI-first — OpenAI is an ops env switch. Multi-user shares the active provider key for the whole process.
+Optional OpenAI overrides: `OPENAI_REALTIME_MODEL`, `OPENAI_VOICE` (resolved on the server; returned non-secret on `POST /api/session`). The setup wizard stays xAI-first — OpenAI is an ops env switch. Multi-user shares the active provider key for the whole process; provider/key/voice defaults can also be changed live from the Lounge's settings modal (owner-only), no `/setup` visit required.
+
+**Voice choice**: each multi-user binding can pick its own realtime voice from `/owner/users` (`voiceId`, defaults to the provider default when unset). xAI's voice list is fetched live from its voice catalog with an explicit "Load voices" action; OpenAI's is a small hardcoded list (`marin`/`cedar` recommended) since no such API exists there. A voice change only applies to the *next* session — never a mid-call hot-swap — and a rejected/invalid pick falls back to the provider default rather than breaking the session. In single-user mode the same picker lives in the settings modal's provider section instead.
 
 Adapter seam: `src/lib/providers/` (capability matrix, mint, xAI WebSocket + OpenAI WebRTC clients).
 
@@ -104,7 +118,7 @@ Adapter seam: `src/lib/providers/` (capability matrix, mint, xAI WebSocket + Ope
 
 Default is single-user (one `VOICE_URL_KEY` + one Hermes trio in `.env`).
 
-With `MULTI_USER=1`, each Voice user binds to an isolated Hermes profile (own API base/key). Enable and manage users at `/owner/users`; readiness at `/owner/health`.
+With `MULTI_USER=1`, each Voice user binds to an isolated Hermes profile (own API base/key). Enable and manage users — including their persona and voice — at `/owner/users`; readiness at `/owner/health`.
 
 **Ops cost:** N Voice users ≈ N Hermes profile processes (ports, keys, `HERMES_HOME`). Do not hide that cost. Runbook: [docs/OPS.md](docs/OPS.md).
 
@@ -151,10 +165,11 @@ Talk modes: **push-to-talk** commits audio from the client; **hands-free** uses 
 
 ## Intentional limits
 
-- No Lounge / per-user **provider picker** — deploy-level `VOICE_PROVIDER` only
+- No per-Lounge-session **provider picker** — `VOICE_PROVIDER` is one process-wide choice for everyone, editable from the settings modal or `/setup`, but not per active call. Voice (not provider) *is* per-user in multi-user mode.
 - No always-on listening without arming hands-free
 - Hermes bases must pass the SSRF allowlist (loopback / private IPs / `*.local`) — Compose service DNS names are rejected; see [docs/OPS.md](docs/OPS.md)
 - Wizard remains single-binding / xAI-first; OpenAI and multi-user are ops/admin after bootstrap
+- Self-restart is a manual, owner-triggered action behind an explicit opt-in (`ALLOW_SELF_RESTART`) — not automatic, and not reachable from the browser unless a deployer turns it on
 
 ## Maintainer
 

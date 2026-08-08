@@ -1,6 +1,6 @@
-import { env } from '$env/dynamic/private';
 import { error } from '@sveltejs/kit';
 import { redactForLog } from '$lib/server/logRedact';
+import { readEnvTrimmed } from '$lib/server/runtimeEnv.server';
 import type { EphemeralClientSecret } from '../types';
 import { CLIENT_SECRETS_URL, DEFAULT_MODEL, DEFAULT_TTL_SECONDS } from './constants';
 
@@ -17,7 +17,7 @@ async function mintInternal(
 	apiKeyOverride?: string,
 	model: string = DEFAULT_MODEL
 ): Promise<MintProbeResult> {
-	const apiKey = apiKeyOverride?.trim() || env.OPENAI_API_KEY?.trim();
+	const apiKey = apiKeyOverride?.trim() || readEnvTrimmed('OPENAI_API_KEY') || undefined;
 	if (!apiKey) {
 		return { ok: false, code: 'missing_key' };
 	}

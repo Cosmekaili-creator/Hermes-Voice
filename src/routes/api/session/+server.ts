@@ -1,6 +1,7 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
 import { resolveSessionConfig } from '$lib/providers/active.server';
 import { requireVoiceKey } from '$lib/server/auth';
+import { personaFromBinding } from '$lib/server/bindings.server';
 import { assertSameOrigin } from '$lib/server/origin.server';
 import { enforceRateLimit, RATE } from '$lib/server/rateLimit.server';
 import { mintRealtimeClientSecret as mintOpenAI } from '$lib/server/openai';
@@ -12,7 +13,7 @@ export const POST: RequestHandler = async (event) => {
 	const binding = await requireVoiceKey(event, body);
 	enforceRateLimit(event, 'mint', RATE.mint.limit, RATE.mint.windowMs, binding.id);
 
-	const config = resolveSessionConfig();
+	const config = resolveSessionConfig(personaFromBinding(binding));
 	const token =
 		config.provider === 'openai' ? await mintOpenAI({ model: config.model }) : await mintXai();
 
