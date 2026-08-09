@@ -106,6 +106,15 @@ const WAIT_PHRASE_EVERY_TICKS = 4;
 const WARM_RECHECK_MS = 60_000;
 /** Auto-greet: how long to wait for the prefetched opening line before giving up silently. */
 const GREET_WAIT_MS = 12_000;
+/**
+ * WebRTC only: safety ceiling for the deferred wait on OpenAI's real end-of-playback
+ * signal (`output_audio_buffer.stopped`) after `response.done`. Only matters if that
+ * event is ever dropped — the normal path always resolves earlier, on the real event,
+ * however long real playback actually takes. Generous relative to the captured trace's
+ * worst-case gap (6.4s) and to this assistant's short conversational reply lengths, while
+ * still bounding the worst case so the UI can never hang in "speaking" forever.
+ */
+const OUTPUT_AUDIO_BUFFER_STOPPED_TIMEOUT_MS = 30_000;
 
 type MintResult = {
 	value: string;
@@ -297,6 +306,14 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 	 */
 	let voiceFallbackNotice = $state<string | null>(null);
 	let thinkTimer: ReturnType<typeof setTimeout> | null = null;
+	/**
+	 * WebRTC only: resolver for the current outstanding wait on `output_audio_buffer.stopped`
+	 * (see `waitForOutputAudioBufferStopped` below). Single outstanding wait, not a queue —
+	 * this app only ever has one response in flight per turn. Whichever fires first — the
+	 * real event or the safety timeout — wins and clears both of these.
+	 */
+	let playbackStoppedResolve: (() => void) | null = null;
+	let playbackStoppedTimer: ReturnType<typeof setTimeout> | null = null;
 	let waitTickTimer: ReturnType<typeof setInterval> | null = null;
 	let warmRecheckTimer: ReturnType<typeof setInterval> | null = null;
 	let hermesAbort: AbortController | null = null;
@@ -360,6 +377,47 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 			clearTimeout(thinkTimer);
 			thinkTimer = null;
 		}
+	}
+
+	/**
+	 * WebRTC only: wait for OpenAI's real end-of-playback signal, `output_audio_buffer.stopped`.
+	 * `response.done`/`response.output_audio.done` fire as soon as the model finishes
+	 * *generating* audio bytes — which happens faster than real-time — not once the WebRTC
+	 * track has actually finished *playing* (observed trailing by 6.4s in a captured trace).
+	 * `output_audio_buffer.stopped` is the real "output buffer fully drained" signal. Resolves
+	 * on that event (see the `output_audio_buffer.stopped` case in handleServerEvent) or on
+	 * OUTPUT_AUDIO_BUFFER_STOPPED_TIMEOUT_MS, whichever comes first. The caller re-checks
+	 * myTurn/turnId immediately after this resolves — same staleness-guard pattern as every
+	 * other awaited point in this file — so a resolve triggered by a stale event/timeout for a
+	 * turn that's no longer current is harmless.
+	 */
+	function waitForOutputAudioBufferStopped(): Promise<void> {
+		return new Promise<void>((resolve) => {
+			// Closure-local: `finish` clears its OWN timer unconditionally, but only touches
+			// the shared playbackStoppedTimer/playbackStoppedResolve when it can prove (via
+			// the identity check below) that it's still the currently-armed wait. Otherwise a
+			// stale/orphaned `finish` firing late (e.g. its event never arrived and only the
+			// safety timeout fired) could clobber a newer call's shared timer/resolver.
+			let myTimer: ReturnType<typeof setTimeout> | null = null;
+			const finish = () => {
+				if (myTimer !== null) {
+					clearTimeout(myTimer);
+					myTimer = null;
+				}
+				if (playbackStoppedTimer !== null && playbackStoppedResolve === finish) {
+					playbackStoppedTimer = null;
+				}
+				if (playbackStoppedResolve === finish) playbackStoppedResolve = null;
+				resolve();
+			};
+			// Resolve any previous still-armed wait before overwriting it — keeps "single
+			// outstanding wait" an actual invariant instead of leaking the old one until its
+			// own timeout.
+			playbackStoppedResolve?.();
+			playbackStoppedResolve = finish;
+			myTimer = setTimeout(finish, OUTPUT_AUDIO_BUFFER_STOPPED_TIMEOUT_MS);
+			playbackStoppedTimer = myTimer;
+		});
 	}
 
 	/** True when a realtime response may still be running (avoid spurious response.cancel). */
@@ -1279,16 +1337,30 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 				const shouldSettleUi = !hermesBridgeActive && !suppressIdleForTool;
 				captionDbg.log('response_done', captionSnap({ shouldSettleUi }));
 				transcript?.commitAssistant();
+				// WebRTC: response.done fires as soon as audio finishes *generating*, well
+				// before the track finishes *playing* — mute only once the real end-of-playback
+				// signal (output_audio_buffer.stopped) arrives. PCM (xAI): whenIdle() genuinely
+				// tracks scheduled-audio completion, so keep muting immediately as before.
+				const usesMediaTracks = !!client?.usesMediaTracks;
 				void (async () => {
 					if (myTurn !== turnId) return;
 					if (shouldSettleUi) {
 						clearThinkTimer();
-						playback?.setRemoteActive(false);
-						captionDbg.log('wait_idle_start', captionSnap());
-						await playback?.whenIdle();
-						captionDbg.log('wait_idle_done', captionSnap());
-						if (destroyed || myTurn !== turnId) return;
-						if (hermesBridgeActive || suppressIdleForTool) return;
+						if (usesMediaTracks) {
+							captionDbg.log('wait_playback_stopped_start', captionSnap());
+							await waitForOutputAudioBufferStopped();
+							captionDbg.log('wait_playback_stopped_done', captionSnap());
+							if (destroyed || myTurn !== turnId) return;
+							if (hermesBridgeActive || suppressIdleForTool) return;
+							playback?.setRemoteActive(false);
+						} else {
+							playback?.setRemoteActive(false);
+							captionDbg.log('wait_idle_start', captionSnap());
+							await playback?.whenIdle();
+							captionDbg.log('wait_idle_done', captionSnap());
+							if (destroyed || myTurn !== turnId) return;
+							if (hermesBridgeActive || suppressIdleForTool) return;
+						}
 					}
 					beginCaptionFade();
 					if (!shouldSettleUi) return;
@@ -1301,6 +1373,17 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 					}
 					void captionDbg.flush();
 				})();
+				return;
+			}
+			// `.cleared` fires instead of `.stopped` when playback is cancelled (barge-in,
+			// explicit response.cancel) — it's the real signal in that case, and without
+			// handling it the pending wait would sit until its safety timeout.
+			case 'output_audio_buffer.stopped':
+			case 'output_audio_buffer.cleared': {
+				// WebRTC's real end-of-playback signal — see waitForOutputAudioBufferStopped().
+				// Never emitted by xAI, so this is a no-op there (the resolver is only ever
+				// armed on the WebRTC path).
+				playbackStoppedResolve?.();
 				return;
 			}
 			default:
@@ -2035,6 +2118,10 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		busy = false;
 		handsfreeArmed = false;
 		clearThinkTimer();
+		// Unstick any pending response.done closure awaiting output_audio_buffer.stopped —
+		// it re-checks `destroyed` immediately after this resolves, so waking it here just
+		// lets it exit cleanly instead of leaking a suspended closure until its own timeout.
+		playbackStoppedResolve?.();
 		clearWaitRotation();
 		clearWarmRecheck();
 		detachNetworkWatch();

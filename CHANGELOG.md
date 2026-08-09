@@ -5,6 +5,13 @@ All notable changes to Hermes Voice are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-08-09
+
+### Fixed
+
+- **Silent audio on OpenAI's WebRTC provider**: the remote track was piped only through the Web Audio API graph (`createMediaStreamSource` → … → `ctx.destination`), a well-documented cross-browser footgun where a remote WebRTC audio track can render silently even on a healthy connection. Audible output now comes from a real `<audio>` element; a dedicated, `ctx.destination`-disconnected analyser node still feeds the Lazic visualizer without double-playing audio. Barge-in's immediate local mute (`setRemoteActive`/`interrupt`) now also toggles the `<audio>` element's `muted` state, since the shared gain node it previously relied on no longer reaches real output.
+- **Assistant's voice cutting off mid-response on OpenAI's WebRTC provider**: `response.done` fires as soon as the model finishes _generating_ audio — which can be much faster than real-time — not once the track has actually finished _playing_; muting on that event cut off the tail of longer replies. The app now waits for OpenAI's real end-of-playback signal (`output_audio_buffer.stopped` / `.cleared`) before muting, with a 30s safety timeout as a backstop if that event is ever dropped. xAI's PCM path (which already tracks genuine scheduled-audio completion via its own buffer scheduling) is unchanged.
+
 ## [0.6.0] — 2026-08-08
 
 ### Added
