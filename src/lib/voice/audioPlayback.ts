@@ -2,8 +2,15 @@ import { deltaBase64ToPlaybackFloat } from './pcm';
 
 export type PlaybackHandle = {
 	analyser: AnalyserNode;
+	/**
+	 * Dedicated analyser tap for OpenAI WebRTC remote audio (Lazic viz). Fed from the
+	 * remote MediaStream but never connected to `ctx.destination` — actual audible
+	 * playback of the remote stream happens via a detached `<audio>` element, not
+	 * Web Audio, so this node exists purely for visualization.
+	 */
+	remoteAnalyser: AnalyserNode;
 	enqueueBase64Pcm16(b64: string): void;
-	/** Attach OpenAI WebRTC remote audio (shared analyser for Lazic viz). */
+	/** Attach OpenAI WebRTC remote audio: plays via a hidden <audio> element, taps remoteAnalyser for Lazic viz. */
 	attachRemoteStream(stream: MediaStream): void;
 	/** Mark remote media as active/idle for whenIdle (no PCM deltas on WebRTC). */
 	setRemoteActive(active: boolean): void;
@@ -33,6 +40,18 @@ export function createPlayback(ctx: AudioContext): PlaybackHandle {
 	analyser.maxDecibels = -28;
 	analyser.connect(ctx.destination);
 
+	// Dedicated tap for OpenAI WebRTC remote audio. Deliberately NOT connected to
+	// ctx.destination: actual audible output for the remote stream comes from a
+	// plain <audio> element (see attachRemoteStream) to avoid the well-documented
+	// cross-browser footgun where a remote WebRTC track piped only through Web
+	// Audio can render silently. Routing it into the shared `analyser` above (which
+	// is wired to destination for the xAI PCM path) would also double-play it.
+	const remoteAnalyser = ctx.createAnalyser();
+	remoteAnalyser.fftSize = analyser.fftSize;
+	remoteAnalyser.smoothingTimeConstant = analyser.smoothingTimeConstant;
+	remoteAnalyser.minDecibels = analyser.minDecibels;
+	remoteAnalyser.maxDecibels = analyser.maxDecibels;
+
 	let nextStartTime = 0;
 	/** AudioContext time when the current PCM utterance's first chunk was scheduled. */
 	let utteranceOrigin = 0;
@@ -44,6 +63,8 @@ export function createPlayback(ctx: AudioContext): PlaybackHandle {
 	let remoteSource: MediaStreamAudioSourceNode | null = null;
 	let remoteGain: GainNode | null = null;
 	let remoteActive = false;
+	/** Actual audible sink for OpenAI WebRTC remote audio (lazily created, reused). */
+	let remoteAudioEl: HTMLAudioElement | null = null;
 
 	function notifyIdleIfNeeded() {
 		if (activeSources > 0 || remoteActive) return;
@@ -70,6 +91,18 @@ export function createPlayback(ctx: AudioContext): PlaybackHandle {
 				/* ignore */
 			}
 			remoteGain = null;
+		}
+		if (remoteAudioEl) {
+			try {
+				remoteAudioEl.pause();
+			} catch {
+				/* ignore */
+			}
+			try {
+				remoteAudioEl.srcObject = null;
+			} catch {
+				/* ignore */
+			}
 		}
 	}
 
@@ -115,11 +148,40 @@ export function createPlayback(ctx: AudioContext): PlaybackHandle {
 		if (destroyed) return;
 		detachRemote();
 		try {
+			// Actual audible playback: a plain <audio> element, not Web Audio. Piping a
+			// remote WebRTC MediaStream only through Web Audio (createMediaStreamSource
+			// -> ... -> ctx.destination) is a well-documented cross-browser footgun where
+			// the track can render silently even though the connection is healthy.
+			if (!remoteAudioEl) {
+				remoteAudioEl = document.createElement('audio');
+				remoteAudioEl.autoplay = true;
+			}
+			remoteAudioEl.srcObject = stream;
+			try {
+				const playResult = remoteAudioEl.play();
+				if (playResult && typeof playResult.catch === 'function') {
+					playResult.catch(() => {
+						/* ignore — autoplay may reject before a user gesture elsewhere */
+					});
+				}
+			} catch {
+				/* ignore */
+			}
+
+			// Web Audio tap, for the Lazic visualizer only — feeds remoteAnalyser, which
+			// is never connected to ctx.destination, so this never contributes to audible
+			// output (avoiding double/echoed audio on top of the <audio> element above).
 			remoteGain = ctx.createGain();
 			remoteGain.gain.value = 1;
 			remoteSource = ctx.createMediaStreamSource(stream);
 			remoteSource.connect(remoteGain);
-			remoteGain.connect(analyser);
+			remoteGain.connect(remoteAnalyser);
+
+			// Keep the real audible sink's mute state consistent with the current
+			// remoteActive flag immediately, so a fresh stream attach doesn't briefly
+			// default to unmuted (or stay stuck muted) ahead of the next explicit
+			// setRemoteActive call.
+			if (remoteAudioEl) remoteAudioEl.muted = !remoteActive;
 		} catch {
 			detachRemote();
 		}
@@ -130,6 +192,7 @@ export function createPlayback(ctx: AudioContext): PlaybackHandle {
 		if (remoteGain) {
 			remoteGain.gain.value = active ? 1 : 0;
 		}
+		if (remoteAudioEl) remoteAudioEl.muted = !active;
 		if (!active) notifyIdleIfNeeded();
 	}
 
@@ -150,12 +213,14 @@ export function createPlayback(ctx: AudioContext): PlaybackHandle {
 		if (remoteGain) {
 			remoteGain.gain.value = 0;
 		}
+		if (remoteAudioEl) remoteAudioEl.muted = true;
 		remoteActive = false;
 		notifyIdleIfNeeded();
 	}
 
 	return {
 		analyser,
+		remoteAnalyser,
 		enqueueBase64Pcm16,
 		attachRemoteStream,
 		setRemoteActive,
@@ -187,8 +252,26 @@ export function createPlayback(ctx: AudioContext): PlaybackHandle {
 			destroyed = true;
 			interrupt();
 			detachRemote();
+			if (remoteAudioEl) {
+				try {
+					remoteAudioEl.pause();
+				} catch {
+					/* ignore */
+				}
+				try {
+					remoteAudioEl.srcObject = null;
+				} catch {
+					/* ignore */
+				}
+				remoteAudioEl = null;
+			}
 			try {
 				analyser.disconnect();
+			} catch {
+				/* ignore */
+			}
+			try {
+				remoteAnalyser.disconnect();
 			} catch {
 				/* ignore */
 			}

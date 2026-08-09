@@ -1370,6 +1370,10 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 					void ensureAudio()
 						.then(() => {
 							playback?.attachRemoteStream(stream);
+							// OpenAI WebRTC audio plays via a hidden <audio> element now (not
+							// Web Audio -> destination); the Lazic viz reads a dedicated,
+							// non-audible analyser tap for it instead of the PCM one.
+							if (playback) playAnalyser = playback.remoteAnalyser;
 						})
 						.catch(() => {
 							/* ignore */
