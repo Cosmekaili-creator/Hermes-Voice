@@ -5,6 +5,22 @@ All notable changes to Hermes Voice are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-08-12
+
+### Added
+
+- **Async Hermes task queue**: the realtime model can now delegate work to Hermes Agent via a new `start_task` tool without blocking the conversation. Quick lookups can still return inline; slower work (or anything explicitly marked `background: true`) runs server-side while the conversation continues, and results resurface automatically once ready — during a natural pause if the model is free to speak, or via a "results ready" chip the user can tap directly at any time. Backed by a per-binding, atomically-written task store (`src/lib/server/tasks/`) and a claim/confirm/release protocol (`POST /api/tasks/{dispatch,ack,clear}`, `GET /api/tasks/stream`) so a result is delivered exactly once even across reconnects or multiple open tabs. Replaces the old synchronous `ask_hermes` bridge as the default path; the legacy blocking tool stays available behind `VOICE_ASYNC_TASKS=0` as a kill switch.
+- **Automatic reconnect on realtime connection failure**, for both xAI (WebSocket) and OpenAI (WebRTC): a dropped connection mid-session now retries silently (bounded: 2 attempts, ~30s total budget) before falling back to the existing manual "Reconnect" affordance — which now stays visible throughout the retry window instead of only appearing once retries exhaust. The fix lives entirely in the shared, provider-agnostic connection-handling code, so one change covers both transports.
+- **Bounded retry for report-resurfacing specifically**: xAI has been observed, via wire-level trace evidence, to occasionally never acknowledge the out-of-band `response.create` call used to resurface a completed background task — no `response.created`, no error, nothing — while a byte-identical retry of the same request succeeds in under 200ms. A single automatic resend now fires ~5s in if the first attempt got no acknowledgment, before the existing longer timeout is reached; covers both the mid-conversation and session-launch resurfacing paths.
+
+### Fixed
+
+- **WebRTC deadlock when a tool-call-only response has no accompanying speech (OpenAI)**: the client optimistically marks the remote audio track "active" the instant any response starts, since WebRTC has no discrete per-chunk completion signal to key off (unlike xAI's PCM path). If that response turned out to be a pure tool call with no speech at all — normal model behavior when silently delegating work — the only code path that cleared that flag was gated behind a UI-settling condition that's specifically false during a tool call, so it never ran; the client's own wait-for-idle check before continuing the turn then never resolved, and the session froze permanently (no timeout could recover it, since the safety timer was armed further down the same stuck path). Fixed by tracking whether a response actually produced audio and resolving the flag unconditionally once real audio (if any) finishes playing, decoupled from the unrelated UI-settling logic. xAI was never affected.
+
+### Changed
+
+- OpenAI hands-free VAD: `semantic_vad` → `server_vad` (`threshold: 0.7`, vs. an ~0.5 default). `semantic_vad` has no tunable raw speech-detection sensitivity — only an end-of-turn timeout knob — so ambient noise or brief handling noise near the mic could falsely trigger barge-in mid-response with no way to tune it down. `server_vad`'s `threshold` gives direct control over that trade-off, at the cost of losing `semantic_vad`'s smarter tolerance for mid-thought pauses within the user's own turn. xAI is unaffected (already on `server_vad`).
+
 ## [0.7.0] — 2026-08-09
 
 ### Fixed

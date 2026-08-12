@@ -3,7 +3,7 @@ import { redactForLog } from '$lib/server/logRedact';
 import { createSseParseState, pushSseChunk } from '$lib/sseParse';
 import { resolveHermesFetchTarget } from '$lib/server/setupProbes.server';
 
-const HERMES_TIMEOUT_MS = 120_000;
+export const HERMES_TIMEOUT_MS = 120_000;
 /** Cap authenticated Hermes prompt size (chars) — DoS / cost control. */
 export const MAX_HERMES_REQUEST_CHARS = 16_000;
 
@@ -148,6 +148,9 @@ export async function streamHermesChat(opts: {
 	hermesApiBase: string;
 	hermesApiKey: string;
 	hermesSessionKey: string;
+	/** Defaults to VOICE_HERMES_SYSTEM — same override mechanism callHermesChat already
+	 * exposes (greeting/memory-review use it there; background tasks use it here). */
+	systemPrompt?: string;
 	onToolProgress?: (progress: HermesToolProgress) => void;
 }): Promise<HermesChatResult> {
 	const { apiKey, sessionKey, target, request } = await resolveHermesTarget(opts);
@@ -163,6 +166,7 @@ export async function streamHermesChat(opts: {
 		opts.signal && typeof AbortSignal.any === 'function'
 			? AbortSignal.any([timeout, opts.signal])
 			: timeout;
+	const systemPrompt = opts.systemPrompt ?? VOICE_HERMES_SYSTEM;
 
 	let upstream: Response;
 	try {
@@ -173,7 +177,7 @@ export async function streamHermesChat(opts: {
 				model: 'hermes-agent',
 				stream: true,
 				messages: [
-					{ role: 'system', content: VOICE_HERMES_SYSTEM },
+					{ role: 'system', content: systemPrompt },
 					{ role: 'user', content: request }
 				]
 			}),

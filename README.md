@@ -10,6 +10,8 @@ Private **realtime voice** web UI for [Hermes Agent](https://github.com/NousRese
 - **Voice choice** — per-binding voice in multi-user mode (`/owner/users`), or a single owner-editable default in single-user mode; xAI's list is fetched live from its voice catalog, OpenAI's is a small curated list — never a mid-call hot-swap, and a bad pick degrades to the provider default instead of failing
 - **In-app settings** — an owner-only pill (provider) and gear icon in the Lounge open a settings modal for provider/keys/voice or the Hermes connection, no `/setup` round-trip needed for routine changes
 - **Hermes bridge** — email, calendar, contacts, and other tool work via `ask_hermes` → your Hermes API
+- **Async task queue** — the model can delegate work to Hermes (`start_task`) without blocking the conversation; quick lookups may return inline, slower or backgrounded work resurfaces automatically on a natural pause or via a "results ready" chip. Default path (`VOICE_ASYNC_TASKS=0` reverts to the legacy synchronous bridge)
+- **Auto-reconnect** — a dropped realtime connection (either provider) retries silently before falling back to a manual "Reconnect" affordance
 - **Auth** — URL key gate (`?k=`); optional multi-user with one Hermes **profile** per Voice user
 - **Persona** — per-binding assistant name, address style, pacing, auto-greet-on-connect, and voice; editable from `/owner/users`, not just hand-edited into `data/bindings.json`
 - **Memory review** — opt-in per binding: capture both sides of a hands-free conversation and hand the transcript to that user's own Hermes profile for a dedicated memory-extraction pass, instead of relying on incidental per-turn tool-calling
@@ -153,6 +155,8 @@ SvelteKit ──POST /api/hermes──► Hermes Agent (:8642 / per-user port)
 ```
 
 Talk modes: **push-to-talk** commits audio from the client; **hands-free** uses provider server VAD. A typed-text field is always available as a third input path — it injects straight into the live session as if spoken, so Hermes still replies in voice, on either provider. Locale switch affects UI strings and soft-hints voice instructions.
+
+`ask_hermes` tool calls block the conversation until Hermes replies. The default `start_task` path doesn't: dispatch returns immediately, Hermes keeps working server-side, and the result reaches the model later — spoken on a natural pause, or via a chip the user can tap directly — without the model ever going silent while it waits.
 
 ## Docs
 

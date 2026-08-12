@@ -23,6 +23,7 @@ export const es = {
 	'status.cancelled': 'Cancelado',
 	'status.micLive': 'Micrófono activo — habla para interrumpir',
 	'status.micMuted': 'Micrófono apagado mientras habla {assistant}',
+	'status.resultsReady': 'resultados listos',
 
 	'button.pressToTalk': 'Pulsa para hablar',
 	'button.armHandsfree': 'Pulsa para escuchar',

@@ -19,3 +19,26 @@ export function isOffline(): boolean {
 export function transportErrorCode(): VoiceErrorCode {
 	return isOffline() ? 'error.offline' : 'error.networkFailed';
 }
+
+/** Provider replies this when we send response.cancel with nothing in flight. */
+export function isBenignCancelError(message: string): boolean {
+	const m = message.toLowerCase();
+	return m.includes('no active response') || m.includes('cancellation failed');
+}
+
+/**
+ * F2: parallel tool calls (start_task/clear_task_queue can fire several in one turn) each
+ * funnel through completeToolCall(), which only calls respond() once — but a race is still
+ * possible if two separate call paths each think they're the last outstanding call. When
+ * that happens the provider replies with some phrasing of "already has an active response"
+ * rather than the isBenignCancelError() message above — this is the second benign case, and
+ * must not tear down the session (console.warn + return; the existing think-timer remains
+ * the real backstop if a turn genuinely stalls).
+ */
+export function isBenignResponseCollision(message: string, code?: string): boolean {
+	const m = message.toLowerCase();
+	return (
+		m.includes('already has an active response') ||
+		code === 'conversation_already_has_active_response'
+	);
+}

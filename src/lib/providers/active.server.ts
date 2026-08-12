@@ -15,6 +15,17 @@ export function getActiveProvider(): ProviderId {
 	return 'xai';
 }
 
+/**
+ * Async Hermes task-queue kill switch (VOICE_ASYNC_TASKS, default ON). Mirrors the
+ * identical check in routes/api/tasks/dispatch/+server.ts's `isAsyncTasksEnabled()` — kept
+ * as a separate, deliberately duplicated readEnvTrimmed-first read rather than importing
+ * across the src/lib/server/tasks/ boundary, so this ops-level flag can be surfaced to
+ * +page.server.ts (and from there, non-secret, to the browser) the same way `provider` is.
+ */
+export function getAsyncTasksEnabled(): boolean {
+	return readEnvTrimmed('VOICE_ASYNC_TASKS') !== '0';
+}
+
 export type ResolvedSessionConfig = Pick<SessionMintResponse, 'provider' | 'model' | 'voice'>;
 
 /**

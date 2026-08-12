@@ -21,6 +21,7 @@ export const en = {
 	'status.cancelled': 'Cancelled',
 	'status.micLive': 'Mic on — speak to interrupt',
 	'status.micMuted': 'Mic off while {assistant} speaks',
+	'status.resultsReady': 'results ready',
 
 	'button.pressToTalk': 'Press to talk',
 	'button.armHandsfree': 'Tap to listen',

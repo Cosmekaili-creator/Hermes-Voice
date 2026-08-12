@@ -23,6 +23,7 @@ export const fr = {
 	'status.cancelled': 'Annulé',
 	'status.micLive': 'Micro actif — parlez pour interrompre',
 	'status.micMuted': 'Micro coupé — {assistant} parle',
+	'status.resultsReady': 'résultats prêts',
 
 	'button.pressToTalk': 'Appuyez pour parler',
 	'button.armHandsfree': 'Appuyez pour écouter',

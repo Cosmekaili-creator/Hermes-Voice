@@ -90,5 +90,8 @@ export const RATE = {
 	voiceList: { limit: 6, windowMs: 60_000 },
 	// Dedicated bucket for the settings self-restart action (chunk D) — separate from
 	// voiceList and setupSave so a restart-button mis-click storm can't eat either budget.
-	setupRestart: { limit: 3, windowMs: 5 * 60_000 }
+	setupRestart: { limit: 3, windowMs: 5 * 60_000 },
+	// Shared by all four async-task routes (dispatch/ack/clear/stream) — a single bucket
+	// across them is intentional, they're all cheap per-call and part of one feature.
+	tasks: { limit: 30, windowMs: 60_000 }
 } as const;

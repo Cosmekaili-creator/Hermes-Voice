@@ -1,4 +1,4 @@
-import { VOICE_TOOLS } from '$lib/voice/tools';
+import { resolveVoiceTools } from '$lib/voice/tools';
 import { userTextItem } from '../items';
 import { PCM_RATE } from '../pcm';
 import type {
@@ -44,6 +44,7 @@ export function createRealtimeClient(
 	const model = options.model?.trim() || DEFAULT_MODEL;
 	const voice = options.voice?.trim() || DEFAULT_VOICE;
 	const inputTranscription: InputTranscription | null = options.inputTranscription ?? null;
+	const asyncTasksEnabled = options.asyncTasksEnabled ?? true;
 
 	function sessionUpdatePayload() {
 		return {
@@ -53,7 +54,7 @@ export function createRealtimeClient(
 				voice,
 				instructions: cachedInstructions,
 				turn_detection: cachedTurnDetection,
-				tools: [...VOICE_TOOLS],
+				tools: [...resolveVoiceTools(asyncTasksEnabled)],
 				audio: {
 					input: {
 						format: { type: 'audio/pcm', rate: PCM_RATE },
@@ -218,9 +219,11 @@ export function createRealtimeClient(
 			if (!ready) return;
 			send({ type: 'input_audio_buffer.append', audio: base64Pcm16 });
 		},
-		commitAndRespond() {
+		commitAndRespond(response?: Record<string, unknown>) {
 			send({ type: 'input_audio_buffer.commit' });
-			send({ type: 'response.create' });
+			send(
+				response !== undefined ? { type: 'response.create', response } : { type: 'response.create' }
+			);
 		},
 		cancelResponse() {
 			send({ type: 'response.cancel' });
@@ -242,8 +245,10 @@ export function createRealtimeClient(
 			if (!ready) return;
 			send({ type: 'conversation.item.create', item: userTextItem(text) });
 		},
-		respond() {
-			send({ type: 'response.create' });
+		respond(response?: Record<string, unknown>) {
+			send(
+				response !== undefined ? { type: 'response.create', response } : { type: 'response.create' }
+			);
 		},
 		close
 	};

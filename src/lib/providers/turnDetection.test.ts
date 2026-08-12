@@ -7,9 +7,15 @@ import {
 } from './types';
 
 describe('handsFreeTurnDetectionFor', () => {
-	it('uses semantic_vad for OpenAI', () => {
+	it('uses server_vad for OpenAI', () => {
 		expect(handsFreeTurnDetectionFor('openai')).toEqual(OPENAI_HANDS_FREE_TURN_DETECTION);
-		expect(handsFreeTurnDetectionFor('openai').type).toBe('semantic_vad');
+		expect(handsFreeTurnDetectionFor('openai').type).toBe('server_vad');
+		expect(handsFreeTurnDetectionFor('openai')).toMatchObject({
+			type: 'server_vad',
+			threshold: 0.7,
+			prefix_padding_ms: 300,
+			silence_duration_ms: 1200
+		});
 	});
 
 	it('uses server_vad with 1200ms silence for xAI', () => {

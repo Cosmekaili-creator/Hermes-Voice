@@ -18,7 +18,12 @@
 </script>
 
 {#if data.unlocked}
-	<LazicLounge persona={data.persona} provider={data.provider} isOwner={data.isOwner} />
+	<LazicLounge
+		persona={data.persona}
+		provider={data.provider}
+		isOwner={data.isOwner}
+		asyncTasksEnabled={data.asyncTasksEnabled}
+	/>
 {:else}
 	<LockedGate setupMode={data.setupMode} />
 {/if}

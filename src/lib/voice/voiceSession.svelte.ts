@@ -1,8 +1,10 @@
 import { pulse } from '$lib/haptics';
+import { SvelteSet } from 'svelte/reactivity';
 import { getLocale, t, type MessageKey, type VoiceErrorCode } from '$lib/i18n';
 import { DEFAULT_PERSONA, type VoicePersona } from '$lib/persona/types';
 import { CAPABILITY_MATRIX } from '$lib/providers/matrix';
 import type { ProviderId } from '$lib/providers/types';
+import type { PublicTask, TaskBusEvent } from '$lib/server/tasks/types';
 import { createMicCapture, type CaptureHandle } from './audioCapture';
 import { createPlayback, type PlaybackHandle } from './audioPlayback';
 import { createSseParseState, pushSseChunk } from '$lib/sseParse';
@@ -14,7 +16,12 @@ import {
 	type CaptionLineView
 } from './captionLines';
 import { formatHermesToolActivity, truncateSnippet } from './captionTruncate';
-import { buildGreetingResponseInstructions, buildHermesVoiceInstructions } from './instructions';
+import {
+	buildHermesVoiceInstructions,
+	buildLaunchResponseInstructions,
+	buildTaskReportResponseInstructions,
+	buildTaskReportRiderInstructions
+} from './instructions';
 import { PROVIDER_PCM_RATE } from './pcm';
 import { createTranscriptLog, readUserTranscriptEvent } from './transcriptLog';
 import {
@@ -24,7 +31,26 @@ import {
 	type RealtimeServerEvent,
 	type TurnDetection
 } from './realtimeClient';
-import { isOffline, sessionErrorForStatus, transportErrorCode } from './sessionErrors';
+import {
+	isBenignCancelError,
+	isBenignResponseCollision,
+	isOffline,
+	sessionErrorForStatus,
+	transportErrorCode
+} from './sessionErrors';
+import {
+	applyInFlightEvent,
+	MAX_AUTO_REPORTS_PER_TURN,
+	MAX_REPORTS_PER_TURN,
+	MAX_UNPROMPTED_REPORT_STREAK,
+	mergeReports,
+	REPORT_SETTLE_MS,
+	reportPauseMsFor,
+	selectBatch,
+	shouldAutoReportNow,
+	type ReportGateInput
+} from './taskReports';
+import { createTaskStream } from './taskStream';
 
 export type CaptionPhase = 'hidden' | 'live' | 'fading';
 
@@ -115,6 +141,20 @@ const GREET_WAIT_MS = 12_000;
  * still bounding the worst case so the UI can never hang in "speaking" forever.
  */
 const OUTPUT_AUDIO_BUFFER_STOPPED_TIMEOUT_MS = 30_000;
+/** Async task dispatch (start_task/clear_task_queue/unknown-tool/missing-arg) resolves near-
+ * instantly (a fast local POST) — much shorter than HERMES_BRIDGE_TIMEOUT_MS, which exists
+ * for the old 120s blocking bridge. Only the legacy ask_hermes kill-switch path still uses
+ * HERMES_BRIDGE_TIMEOUT_MS. */
+const DISPATCH_UI_TIMEOUT_MS = 10_000;
+/** Client-side ceiling on the dispatch POST itself — must exceed the server's 5s hard cap
+ * (DISPATCH_WAIT_MS_MAX) with margin. */
+const DISPATCH_CLIENT_TIMEOUT_MS = 9000;
+/** How often to re-check shouldAutoReportNow() during pure silence (no task-bus event, no
+ * turn boundary) — without this, the relaxed pause/streak gate in taskReports.ts only ever
+ * gets evaluated at the two pre-existing event-driven moments (a task completing, or a turn
+ * ending), so a report that arrives mid-silence could sit unspoken until the next unrelated
+ * event. See scheduleReportRecheck()/maybeAutoReport() below. */
+const REPORT_RECHECK_MS = 3_000;
 
 type MintResult = {
 	value: string;
@@ -130,12 +170,6 @@ function isProviderId(value: unknown): value is ProviderId {
 
 function isTalkMode(value: unknown): value is TalkMode {
 	return value === 'ptt' || value === 'handsfree';
-}
-
-/** Provider replies this when we send response.cancel with nothing in flight. */
-function isBenignCancelError(message: string): boolean {
-	const m = message.toLowerCase();
-	return m.includes('no active response') || m.includes('cancellation failed');
 }
 
 /**
@@ -202,8 +236,14 @@ function quarantineHermesToolOutput(raw: string): string {
  * Real voice session orchestrator.
  * Auth: HttpOnly cookie only — do not pass raw voice keys into the SPA.
  */
-export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
+export function createVoiceDemo(
+	opts: { persona?: VoicePersona; asyncTasksEnabled?: boolean } = {}
+) {
 	const persona = opts.persona ?? DEFAULT_PERSONA;
+	/** VOICE_ASYNC_TASKS kill switch (Part F), threaded from +page.server.ts via
+	 * LazicLounge.svelte — read once for the life of this session, same discipline as
+	 * `persona` above (a flag flip implies a different session entirely). */
+	const asyncTasksEnabled = opts.asyncTasksEnabled ?? true;
 
 	let state = $state<VoiceDemoState>('idle');
 	let statusOverride = $state<StatusOverride>(null);
@@ -216,12 +256,55 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 	let networkWatchAttached = false;
 	/** True while hands-free is armed for continuous listen (may outlive UI idle briefly). */
 	let handsfreeArmed = $state(false);
+	/**
+	 * Automatic-reconnect bookkeeping (see attemptAutoReconnect() below). Plain `let`, not
+	 * $state — like `turnId`/`busy`'s internal-bookkeeping siblings, this is not UI-reactive
+	 * state; only `needsReconnect` (above) is what the UI actually reads.
+	 *
+	 * `autoReconnectGeneration` is its own dedicated counter, deliberately NOT reusing
+	 * `turnId` — `turnId` is bumped by many unrelated things throughout this file (every
+	 * fail()/failRaw()/rearmListening()/finishListening()/speakReports()/etc.), so a
+	 * single-pending-timer invariant built on it would misfire constantly. Same pattern as
+	 * `taskStream.ts`'s own `generation`/`clearReconnectTimer()`: bump the counter to
+	 * invalidate any in-flight timer/attempt from a superseded call, rather than trying to
+	 * cancel it directly.
+	 */
+	let autoReconnectGeneration = 0;
+	let autoReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	/** True from the moment attemptAutoReconnect() commits to a retry sequence until it
+	 * resolves (success, or finalizeAutoReconnectFailure()) — the ONLY idempotence guard for
+	 * re-entrancy across the 3 call sites (onError/onClose/recoverConnection). Deliberately
+	 * distinct from `busy`, which is also true for plenty of unrelated things (Hermes bridge
+	 * calls, the "thinking" phase) and must never be reused here — see
+	 * attemptAutoReconnect()'s guard for why, and why this feature no longer touches `busy`
+	 * at all. */
+	let autoReconnectActive = false;
+	let autoReconnectAttempt = 0;
+	let autoReconnectDeadline = 0;
+	/** Snapshot of "was the session actually in use" taken once, at the start of the retry
+	 * sequence (see attemptAutoReconnect()) — read at the end of a successful
+	 * runAutoReconnectAttempt() to decide whether to resume listening. Shared by the whole
+	 * (up to AUTO_RECONNECT_MAX_ATTEMPTS) sequence, not re-taken per attempt. */
+	let autoReconnectWasActive = false;
+	/** Most recent connect-failure info for the current retry sequence — seeded (if available)
+	 * from the triggering onError message, then overwritten by each attempt's own failure in
+	 * runAutoReconnectAttempt()'s catch block, so the LAST attempt's real failure is what
+	 * eventually surfaces via finalizeAutoReconnectFailure() -> setIdle(), instead of the
+	 * original transport-drop reason or nothing at all. Reuses the StatusOverride shape
+	 * setIdle()/fail()/failRaw() already use rather than inventing a new one. */
+	let autoReconnectLastError: StatusOverride = null;
+	const AUTO_RECONNECT_MAX_ATTEMPTS = 2;
+	const AUTO_RECONNECT_BUDGET_MS = 30_000;
 	/** Reactive mirror of client.supportsBargeIn (client itself is not $state). */
 	let clientBargeIn = $state(false);
 	/** Elapsed seconds while Hermes works; null when not in a wait. */
 	let waitElapsedSec = $state<number | null>(null);
 	/** Blocks response.done → idle until post-tool audio starts (or fail). */
 	let suppressIdleForTool = false;
+	/** True once the current response has emitted any real audio (transcript or PCM delta) —
+	 * distinguishes a spoken response from a function-call-only one, so remoteActive can be
+	 * resolved back to false in response.done without waiting for audio that never arrives. */
+	let responseHadAudio = false;
 	let micAnalyser = $state<AnalyserNode | null>(null);
 	let playAnalyser = $state<AnalyserNode | null>(null);
 	/** Live Hermes tool activity (from SSE tool progress) during bridge wait. */
@@ -341,6 +424,120 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 	 * yet), independent of `state` — on xAI, `state` stays 'listening' for the whole utterance,
 	 * so consumeGreeting() needs this to avoid talking over a user who's already mid-sentence. */
 	let userSpeechActive = false;
+
+	// --- Async task-queue client state (Phase 4+5) -------------------------------------
+	let taskStream: ReturnType<typeof createTaskStream> | null = null;
+	/** FIFO of unclaimed done/failed results. Not $state — only pendingReportCount (below)
+	 * is reactive; the array itself is internal bookkeeping (see taskReports.ts). */
+	let pendingReports: PublicTask[] = [];
+	/** Items claimed for the CURRENT report turn (dedicated or rider) — moved here out of
+	 * pendingReports once a claim is confirmed won, until confirm/release. */
+	let claimedReports: PublicTask[] = [];
+	let pendingReportCount = $state(0);
+	/** F3 fix: a Set of in-flight (queued/running) task ids, not a raw counter — bus events
+	 * like `ack` mode `release` and `reconcileStale`'s stale-record restores can republish
+	 * task.queued/task.done/task.failed for a task already counted once, which would
+	 * double-count or double-decrement an integer. Add/remove by id is idempotent: adding an
+	 * already-present id or removing an absent one is a no-op, so replays can't drift the
+	 * count. inFlightTaskCount below is a pure derived view (`.size`) — never assign to it
+	 * directly, mutate inFlightTaskIds instead. */
+	const inFlightTaskIds = new SvelteSet<string>();
+	const inFlightTaskCount = $derived(inFlightTaskIds.size);
+	let reportSettleTimer: ReturnType<typeof setTimeout> | null = null;
+	let claimInFlight = false;
+	/** Sibling of greetingTurnId — the turn id of an in-flight dedicated/merged report
+	 * response, or null. Used by the response.done confirm hook (F11) and every
+	 * release-on-failure path. */
+	let reportTurnId: number | null = null;
+	/** True only while the CURRENT reportTurnId is a standalone/launch report turn whose
+	 * instructions forbid tool calls (speakReports(), consumeGreeting()'s merged launch
+	 * turn) — false for a PTT/typed rider turn (finishListening()/sendText()), where the
+	 * user's own message may legitimately need a tool. Explicitly set at every reportTurnId
+	 * assignment site (never left to a stale value from a prior turn) — see
+	 * handleFunctionCallDone()'s live-trace guard below. */
+	let reportTurnBlocksTools = false;
+	/** True once this report turn has actually produced spoken audio (a
+	 * response.output_audio_transcript.delta landed for it) — live-trace fix: a report turn
+	 * that ends via response.done having said nothing (e.g. diverted into an unwanted tool
+	 * call) must not be confirmed, or the result is lost for good. Reset at every reportTurnId
+	 * assignment site. */
+	let reportTurnSpoke = false;
+	/** True once `response.created` has been observed for the CURRENT report turn — used
+	 * solely to detect xAI's confirmed silent-drop failure mode on the report-turn
+	 * `response.create` call (no response.created, no error, nothing, for the full
+	 * THINK_TIMEOUT_MS) so speakReports()'s short retry timer knows whether a resend is
+	 * actually needed. Reset at every reportTurnId assignment site, same convention as
+	 * reportTurnSpoke above. */
+	let reportTurnGotCreated = false;
+	/** True only while the CURRENT reportTurnId is the trigger === 'auto' turn started by
+	 * speakReports() — the sole path that increments unpromptedReportStreak. Live-trace bug
+	 * 2 fix: a failed/silent unprompted report turn (reportTurnSpoke never becomes true)
+	 * shouldn't permanently consume part of the 2-turn streak budget, so every
+	 * abandonment/failure path gated on this flag undoes that increment (floored at 0)
+	 * before clearing report-turn state. False for chip turns and PTT/typed riders, which
+	 * never increment the streak. Reset at every reportTurnId assignment/clearing site,
+	 * same convention as reportTurnSpoke above. */
+	let reportTurnWasAutoTriggered = false;
+	let launchClaimInFlight = false;
+	let lastReportTurnAt = 0;
+	/** Stamped at rearmListening()'s `state = 'listening'` assignment (the single shared site
+	 * every rearm path — normal end-of-turn, error recovery, cancel-triggered — runs through),
+	 * and once at warm()'s connect-time init below. Deliberately NOT stamped at response.done:
+	 * on WebRTC that event fires before the audio track finishes actually playing (see
+	 * waitForOutputAudioBufferStopped()), which would under-count the real pause by the
+	 * playback tail. Left at 0 only before the session has ever reached a real listening
+	 * state — see reportPauseMsFor()/shouldAutoReportNow(). */
+	let lastAssistantTurnEndedAt = 0;
+	/** Consecutive unprompted (auto/launch) report turns with no real user turn in between —
+	 * caps the "she keeps talking to herself" failure mode. Reset to 0 at every real user turn
+	 * (hands-free speech_stopped, finishListening(), sendText(), the report chip) and
+	 * incremented only by the unprompted paths themselves (speakReports('auto'),
+	 * consumeGreeting()'s launch-with-reports). See shouldAutoReportNow(). */
+	let unpromptedReportStreak = 0;
+	/** Poll timer that re-evaluates shouldAutoReportNow() during pure silence — see
+	 * scheduleReportRecheck()/maybeAutoReport() below. */
+	let reportRecheckTimer: ReturnType<typeof setTimeout> | null = null;
+	/** Persona is fixed for the life of this session (see the opts destructure above), so this
+	 * is computed once rather than on every gate check. */
+	const reportPauseMs = reportPauseMsFor(persona);
+	/** True once consumeGreeting()'s launch-turn attempt (if any) for this session has
+	 * resolved, or was never going to happen at all — guards scheduleReportRecheck() from
+	 * arming before the launch turn has had its chance to merge pending reports into ONE
+	 * response.create (see the doc comment on scheduleReportRecheck()). */
+	let launchAttemptSettled = false;
+	// F2 — outstanding tool-call tracking for the current response (parallel start_task/
+	// clear_task_queue calls in one turn must not each independently call respond()).
+	let outstandingToolCalls = new SvelteSet<string>();
+	let toolCallsTurn = -1;
+
+	function setPendingReports(next: PublicTask[]) {
+		pendingReports = next;
+		pendingReportCount = pendingReports.length;
+	}
+
+	function currentReportGateInput(): ReportGateInput {
+		return {
+			destroyed,
+			talkMode,
+			handsfreeArmed,
+			state,
+			busy,
+			hermesBridgeActive,
+			userSpeechActive,
+			responseMayBeActive: responseMayBeActive(),
+			// launchClaimInFlight is a separate flag (consumeGreeting's own launch-turn
+			// claim) but the gate cares about "is ANY claim outstanding right now" —
+			// OR both so the auto-report gate can't race a concurrent launch-turn claim.
+			claimInFlight: claimInFlight || launchClaimInFlight,
+			reportTurnInFlight: reportTurnId !== null,
+			pendingCount: pendingReports.length,
+			lastReportTurnAt,
+			lastAssistantTurnEndedAt,
+			unpromptedReportStreak,
+			pauseMs: reportPauseMs,
+			now: Date.now()
+		};
+	}
 
 	function activeProvider(): ProviderId {
 		return token?.provider ?? 'xai';
@@ -477,10 +674,14 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 			hermesBridgeActive
 		) {
 			// Same path a genuine transport close/error already takes (see onClose below) —
-			// deliberately not gated on `busy`/`hermesBridgeActive`: a stranded connection is
-			// stranded no matter which turn stage it died in, and `fail()` itself aborts any
-			// in-flight Hermes lookup that could otherwise hang until its own timeout.
-			fail('error.connectionLost', { reconnect: true });
+			// deliberately not gated on `busy`/`hermesBridgeActive` here: a stranded connection
+			// is stranded no matter which turn stage it died in (including mid-Hermes-bridge
+			// call), and `attemptAutoReconnect()` itself aborts any in-flight Hermes lookup that
+			// could otherwise hang until its own timeout. Re-entrancy across the 3 call sites
+			// (this one, onError, onClose) is handled inside `attemptAutoReconnect()` itself, via
+			// its own `autoReconnectActive`/`autoReconnectTimer` guard — not by anything checked
+			// here at the call site.
+			attemptAutoReconnect('recoverConnection');
 			return;
 		}
 
@@ -511,10 +712,16 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		online = false;
 	};
 	const handleVisibilityChange = () => {
+		// F15: the production vhost is HTTP/1.1-only (~6 connections/origin cap) — a
+		// permanent SSE task stream per background tab would eventually starve the origin.
+		// Handled before the existing background-suspect-timing logic below, which is about
+		// the realtime connection itself, not the task stream.
 		if (document.visibilityState === 'hidden') {
+			stopTaskStream();
 			hiddenSince = Date.now();
 			return;
 		}
+		startTaskStream();
 		const hiddenMs = hiddenSince !== null ? Date.now() - hiddenSince : 0;
 		hiddenSince = null;
 		if (hiddenMs < BACKGROUND_SUSPECT_MS) return;
@@ -775,6 +982,7 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		// delivered back — abort it rather than let it finish into the void.
 		hermesAbort?.abort();
 		hermesAbort = null;
+		releaseReportTurn(true);
 		turnId += 1;
 		playback?.interrupt();
 		clearCaptions();
@@ -809,6 +1017,7 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		// into the void.
 		hermesAbort?.abort();
 		hermesAbort = null;
+		releaseReportTurn(true);
 		turnId += 1;
 		playback?.interrupt();
 		clearCaptions();
@@ -845,6 +1054,7 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 			/* ignore */
 		}
 		hermesAbort = null;
+		releaseReportTurn(true);
 		turnId += 1;
 		clearThinkTimer();
 		clearWaitRotation();
@@ -868,6 +1078,232 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		setIdle({ kind: 'key', key: 'status.cancelled' });
 	}
 
+	function clearAutoReconnect() {
+		if (autoReconnectTimer !== null) {
+			clearTimeout(autoReconnectTimer);
+			autoReconnectTimer = null;
+		}
+		autoReconnectGeneration += 1;
+		autoReconnectAttempt = 0;
+		autoReconnectActive = false;
+		autoReconnectLastError = null;
+	}
+
+	/** Map a raw connect-failure message to the StatusOverride shape setIdle()/fail()/failRaw()
+	 * already use, via the same CONNECT_ERROR_CODES table connectFailure() uses for the
+	 * equivalent mapping on the initial-connect path (see connectFailure() below). */
+	function mapConnectErrorMessage(message: string): StatusOverride {
+		const mapped = CONNECT_ERROR_CODES[message as keyof typeof CONNECT_ERROR_CODES];
+		return mapped ? { kind: 'key', key: mapped } : { kind: 'raw', text: message };
+	}
+
+	/**
+	 * Single entry point for the 3 genuine transport-drop sites — onError/onClose inside
+	 * ensureRealtime(), and recoverConnection() — see their call sites below. Attempts an
+	 * automatic reconnect first, falling back to the manual "Reconnect" button
+	 * (needsReconnect, read by LazicLounge.svelte/VoicePicker.svelte) only if automatic
+	 * retries don't succeed.
+	 */
+	function attemptAutoReconnect(
+		cause: 'onError' | 'onClose' | 'recoverConnection',
+		reason?: string
+	) {
+		// Accepted for call-site clarity/future observability — behavior does not currently
+		// branch on which of the 3 sites triggered this (same cleanup either way).
+		void cause;
+		if (destroyed) return;
+		// Idempotence: both onError AND onClose fire for a single provider-side failure
+		// (confirmed in both xai/client.ts and openai/client.ts — connectionState:'failed'
+		// triggers onError then onClose; a socket error/close pair does the same on xAI).
+		// Today's fail() masked this by hard-disarming on the FIRST call, making the second
+		// call's state-based guard return early. This function removes that hard-disarm from
+		// the immediate path, so it needs its own explicit re-entrancy guard instead —
+		// `autoReconnectActive` specifically, NOT `busy`: `busy` is also true for plenty of
+		// unrelated things (an in-flight Hermes bridge call, the whole "thinking" phase), so
+		// reusing it here would silently swallow a drop that happens to land mid-"thinking"
+		// (no cleanup, no retry, no needsReconnect) — worse than the pre-existing behavior.
+		if (autoReconnectTimer !== null || autoReconnectActive) return;
+
+		// Snapshot BEFORE any cleanup mutates these — this is the "was the session actively
+		// in use" signal that decides whether it's worth auto-retrying at all.
+		const wasActive =
+			handsfreeArmed || state === 'listening' || state === 'thinking' || state === 'speaking';
+
+		// Same cleanup fail() already does today for the transport-drop case (see fail()'s
+		// opts?.reconnect branch above) — kept identical, EXCEPT: do not call
+		// hardDisarmCapture() yet (that's what let onClose's state-based guard short-circuit
+		// before; hands-free needs to survive into the retry), and release any claimed report
+		// turn as NOT spoken (see releaseReportTurn() call below) — an app-initiated
+		// connection drop is never "the user heard and dismissed it", and spoken:true costs
+		// one of MAX_REPORT_ATTEMPTS (2) server-side, permanently deleting the result once
+		// both are burned. Repeated automatic drops must not silently destroy task results.
+		hermesAbort?.abort();
+		hermesAbort = null;
+		releaseReportTurn(false);
+		turnId += 1;
+		playback?.interrupt();
+		clearCaptions();
+		try {
+			client?.clearInputBuffer();
+		} catch {
+			/* ignore */
+		}
+		// A drop mid-Hermes-bridge-call or mid-"thinking" is now reachable here (this guard no
+		// longer gates on `busy`) — clear the same bridge/wait bookkeeping fail()/setIdle()
+		// already clear on their own paths, so a retry (or the manual-fallback UI) doesn't sit
+		// on top of stale "still working" timers/flags.
+		hermesBridgeActive = false;
+		suppressIdleForTool = false;
+		clearThinkTimer();
+		clearWaitRotation();
+		hermesWaitActivity = null;
+
+		// Seed with the triggering failure (onError only — onClose/recoverConnection have no
+		// message text of their own); each retry attempt's own failure overwrites this in
+		// runAutoReconnectAttempt()'s catch block, so whatever's here when
+		// finalizeAutoReconnectFailure() runs is the most useful reason available at that time.
+		autoReconnectLastError = reason ? mapConnectErrorMessage(reason) : null;
+
+		if (!wasActive || isOffline()) {
+			finalizeAutoReconnectFailure();
+			return;
+		}
+
+		autoReconnectWasActive = wasActive;
+		autoReconnectDeadline = Date.now() + AUTO_RECONNECT_BUDGET_MS;
+		autoReconnectAttempt = 0;
+		autoReconnectActive = true;
+		// Surface the manual fallback immediately, in parallel with the automatic attempt —
+		// never gate the manual affordance behind the retry timer/budget. needsReconnect is a
+		// plain $state flag read directly by LazicLounge.svelte/VoicePicker.svelte with no
+		// other side effects, so a direct assignment here is safe on its own.
+		needsReconnect = true;
+		// State must not read as an active state (listening/thinking/speaking) while a retry is
+		// in flight — taskReports.ts's shouldAutoReportNow() gates on state === 'listening' (see
+		// currentReportGateInput() above), so leaving state active here would let the
+		// report-recheck poll misfire mid-retry. This mirrors just the state-transition piece of
+		// setIdle() (state/statusOverride), without its busy/hardDisarmCapture()/needsReconnect
+		// side effects, which are handled explicitly above/below instead — and deliberately
+		// does NOT force `busy = true`: that used to also disable the manual Reconnect button
+		// (buttonDisabled/toggle()/retryMic() all gate on `busy`) for the whole retry window,
+		// contradicting the requirement that the manual fallback stay available throughout, not
+		// just after retries exhaust. If this assignment is ever removed, keeping
+		// handsfreeArmed true through the retry window stops being safe.
+		state = 'idle';
+		statusOverride = null;
+		// Unconditionally normalize `busy` to false as part of quiescing for the retry window —
+		// mirrors setIdle()'s own handling. A drop can land while `busy` is true for a reason
+		// unrelated to this function (mid-"thinking", mid-Hermes-bridge-call); the SUCCESS path
+		// in runAutoReconnectAttempt() never touches `busy` (rearmListening() early-returns for
+		// PTT without doing so), so leaving this out would strand `busy` at true forever after a
+		// successful retry, permanently disabling the talk button. finalizeAutoReconnectFailure()
+		// doesn't need its own copy — it already goes through setIdle(), which clears `busy`.
+		busy = false;
+
+		scheduleNextAutoReconnectAttempt(++autoReconnectGeneration);
+	}
+
+	function scheduleNextAutoReconnectAttempt(gen: number) {
+		if (destroyed || gen !== autoReconnectGeneration) return;
+		if (
+			Date.now() >= autoReconnectDeadline ||
+			autoReconnectAttempt >= AUTO_RECONNECT_MAX_ATTEMPTS
+		) {
+			finalizeAutoReconnectFailure();
+			return;
+		}
+		// Two fixed delays, not backoffDelayMs() from taskStream.ts — that schedule (an
+		// unbounded, capped-at-30s exponential series) is tuned for an indefinitely-retried
+		// SSE stream, not this feature's tight 2-attempt/30s-budget shape. Not worth a jitter
+		// helper for 2 attempts either.
+		const delay = autoReconnectAttempt === 0 ? 500 : 4000;
+		autoReconnectTimer = setTimeout(() => {
+			autoReconnectTimer = null;
+			void runAutoReconnectAttempt(gen);
+		}, delay);
+	}
+
+	async function runAutoReconnectAttempt(gen: number) {
+		if (destroyed || gen !== autoReconnectGeneration) return;
+		autoReconnectAttempt += 1;
+		// Never reuse a possibly-already-consumed ephemeral token across attempts.
+		token = null;
+		// Bound this single attempt to whatever's left of the overall budget — without this,
+		// ensureRealtime() (up to ~20s of provider connect timeout, doubled by the
+		// voice-fallback retry, and unbounded on top of that since mintSession()'s bare fetch
+		// has no AbortController/timeout of its own) could keep a single attempt alive well
+		// past AUTO_RECONNECT_BUDGET_MS on its own — the budget check in
+		// scheduleNextAutoReconnectAttempt() only ever ran *between* attempts, never during one.
+		const remainingMs = autoReconnectDeadline - Date.now();
+		if (remainingMs <= 0) {
+			finalizeAutoReconnectFailure();
+			return;
+		}
+		try {
+			await Promise.race([
+				ensureRealtime(),
+				new Promise<never>((_, reject) =>
+					setTimeout(() => reject(new Error('autoReconnectAttemptTimedOut')), remainingMs)
+				)
+			]);
+		} catch (err) {
+			// A superseded (already-abandoned) attempt's timeout/rejection can still land here
+			// after a newer sequence has started — without this guard it would clobber the
+			// CURRENT sequence's autoReconnectLastError with a stale one. Same staleness idiom
+			// used everywhere else in this feature.
+			if (destroyed || gen !== autoReconnectGeneration) return;
+			// Capture this attempt's real failure so the LAST one is what the user eventually
+			// sees (see finalizeAutoReconnectFailure()) instead of the original transport-drop
+			// reason or nothing at all. Prefer the structured error shapes ensureRealtime()'s
+			// connectFailure() already throws (VoiceAppError/VoiceRawError) so the exact
+			// override fail()/failRaw() would have shown is preserved; fall back to the same
+			// CONNECT_ERROR_CODES mapping connectFailure() uses for anything else — EXCEPT our
+			// own injected timeout above, which isn't a CONNECT_ERROR_CODES key and would
+			// otherwise fall through to mapConnectErrorMessage()'s raw-text branch and render the
+			// literal internal string "autoReconnectAttemptTimedOut" to the user; map it onto the
+			// existing, already-translated session-connect-timeout key instead.
+			if (err instanceof Error && err.message === 'autoReconnectAttemptTimedOut') {
+				autoReconnectLastError = { kind: 'key', key: 'error.sessionConnectTimeout' };
+			} else if (err instanceof VoiceAppError) {
+				autoReconnectLastError = { kind: 'key', key: err.code };
+			} else if (err instanceof VoiceRawError) {
+				autoReconnectLastError = { kind: 'raw', text: err.message };
+			} else {
+				autoReconnectLastError = mapConnectErrorMessage(
+					err instanceof Error ? err.message : 'unknown'
+				);
+			}
+			scheduleNextAutoReconnectAttempt(gen);
+			return;
+		}
+		// A late-resolving ensureRealtime() that "wins" the race after our own timeout already
+		// rejected (and this generation has since moved on / been superseded) is the same
+		// stale-resolve-after-generation-bump category as everywhere else in this file — the
+		// check below still guards it correctly. ensureRealtime() assigns `client = rt`
+		// unconditionally on its own success regardless of caller, so a stale-but-eventually-
+		// successful attempt still installs a working client "too late" from this function's
+		// perspective, which is harmless, not a bug.
+		if (destroyed || gen !== autoReconnectGeneration) return;
+		needsReconnect = false;
+		clearAutoReconnect();
+		if (autoReconnectWasActive) {
+			void rearmListening();
+		}
+	}
+
+	function finalizeAutoReconnectFailure() {
+		hardDisarmCapture();
+		try {
+			client?.close();
+		} catch {
+			/* ignore */
+		}
+		client = null;
+		token = null;
+		setIdle(autoReconnectLastError ?? { kind: 'key', key: 'error.connectionLost' }, true);
+		clearAutoReconnect();
+	}
+
 	async function ensureAudio(): Promise<AudioContext> {
 		if (!audioCtx) {
 			try {
@@ -889,7 +1325,7 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 	/**
 	 * PCM append (xAI WebSocket only). OpenAI WebRTC uses the shared MediaStream track.
 	 * xAI: listening only — speaker→mic echo cancels long replies if we append while speaking.
-	 * OpenAI WebRTC: barge-in via track + semantic_vad interrupt_response (see allowMicSend).
+	 * OpenAI WebRTC: barge-in via track + server_vad interrupt_response (see allowMicSend).
 	 */
 	function allowAppend(): boolean {
 		if (client?.usesMediaTracks) return false;
@@ -1115,7 +1551,7 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		}
 	}
 
-	function beginHermesWorkingUi(myTurn: number) {
+	function beginHermesWorkingUi(myTurn: number, timeoutMs: number = HERMES_BRIDGE_TIMEOUT_MS) {
 		clearCaptions();
 		hermesWaitActivity = null;
 		hermesBridgeActive = true;
@@ -1130,15 +1566,646 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 			if (hermesBridgeActive || suppressIdleForTool || state === 'thinking') {
 				fail('error.hermesTimeout');
 			}
-		}, HERMES_BRIDGE_TIMEOUT_MS);
+		}, timeoutMs);
+	}
+
+	/**
+	 * F2: single shared completion path for every tool-call branch that is NOT the legacy
+	 * ask_hermes bridge (start_task, clear_task_queue, unknown-tool-name, missing-argument).
+	 * The realtime model can emit several `function_call` items in one turn (dispatch is
+	 * cheap — "start these three things" is expected) — if each branch independently called
+	 * client.respond(), the second call would collide with "conversation already has an
+	 * active response" and (per isBenignResponseCollision, which is distinct from the
+	 * existing isBenignCancelError check) fall through to a hard error + session teardown.
+	 * Funnels every branch's completion through here so respond() fires exactly once, after
+	 * the LAST outstanding call_id of this response resolves.
+	 */
+	async function completeToolCall(
+		callId: string,
+		output: string,
+		myTurn: number,
+		opts?: { endUi?: boolean }
+	) {
+		if (destroyed || myTurn !== turnId) return;
+		try {
+			await playback?.whenIdle();
+			if (destroyed || myTurn !== turnId) return;
+			client?.sendFunctionCallOutput(callId, quarantineHermesToolOutput(output));
+			if (toolCallsTurn !== myTurn) return; // this turn's batch was superseded — bail silently
+			outstandingToolCalls.delete(callId);
+			if (outstandingToolCalls.size > 0) return; // not the last one — do not respond() yet
+			client?.respond();
+			if (opts?.endUi !== false) endHermesBridgeUi();
+			statusOverride = null;
+			clearThinkTimer();
+			thinkTimer = setTimeout(() => {
+				if (destroyed || myTurn !== turnId) return;
+				if (state === 'thinking') {
+					fail('error.noReply');
+				}
+			}, THINK_TIMEOUT_MS);
+		} catch {
+			fail('error.voiceToolError');
+		}
+	}
+
+	/** POST /api/tasks/dispatch — quick lookups may resolve inline; slower work returns a
+	 * queued acknowledgement. Every path (success, server-side failure, network failure,
+	 * timeout) MUST reach completeToolCall(), or the model's turn hangs forever — mirrors
+	 * the existing invariant the unknown-tool/missing-argument branches already relied on. */
+	async function dispatchTask(
+		callId: string,
+		request: string,
+		title: string | undefined,
+		myTurn: number,
+		background: boolean
+	) {
+		try {
+			const res = await fetch('/api/tasks/dispatch', {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: { 'Content-Type': 'application/json' },
+				// waitMs: 0 skips the route's bounded inline wait entirely — the model has
+				// already said `background: true`, meaning it's already given the user
+				// something to go on and this task is enrichment, not the answer they're
+				// waiting on. Omitted (not just 0) when background !== true, so the route
+				// falls back to its own DISPATCH_WAIT_MS_DEFAULT — see +server.ts.
+				body: JSON.stringify({ request, title, ...(background ? { waitMs: 0 } : {}) }),
+				signal: AbortSignal.timeout(DISPATCH_CLIENT_TIMEOUT_MS)
+			});
+			const body = (await res.json().catch(() => null)) as {
+				ok?: boolean;
+				mode?: 'inline' | 'queued';
+				outcome?: 'done' | 'failed';
+				result?: string;
+				failureCode?: string;
+				id?: string;
+				title?: string;
+			} | null;
+
+			let output: string;
+			if (body?.ok && body.mode === 'inline') {
+				output =
+					body.outcome === 'done'
+						? (body.result ?? '(no result)')
+						: `Task failed${body.failureCode ? ` (${body.failureCode})` : ''}.${body.result ? ` ${body.result}` : ''} Tell the user honestly that it failed.`;
+				// F-inline-confirm fix: the dispatch route already claimed this task server-side
+				// (status:'reporting') and we're about to speak its result directly as this
+				// tool call's output — confirm it NOW. Without this, this same tab's own SSE
+				// stream still receives the task.done/task.failed bus event (the bus broadcasts
+				// to every subscriber, including the dispatching tab) and merges it into
+				// pendingReports as a phantom unclaimed report. At REPORT_CLAIM_TTL_MS later,
+				// reconcileStale would restore the never-confirmed 'reporting' record back to
+				// done/failed and republish it, so it becomes claimable — and gets read out —
+				// a second time. Confirm regardless of outcome (done or failed): both were
+				// claimed by the route's claimTasks call, both need confirming.
+				if (body.id) void postAck('confirm', [body.id]);
+			} else if (body?.ok && body.mode === 'queued') {
+				output = background
+					? "Started quietly in the background. Say nothing about it: do not tell the user you are searching, looking it up, or that you will report back. Just carry on the conversation from where you left off — follow up on what they said, or leave them the floor if it's their turn. The result will reach you later and you'll deliver it then."
+					: `Not back yet — it's still running and will reach you later. Do not invent a result and do not make a production of the wait: one short clause in passing at most. Then keep the conversation alive — say what you already know about it, or ask something related. Never end this turn on "I'll get back to you".`;
+			} else {
+				output =
+					'Could not start that — task storage is unavailable right now. Tell the user it did not go through.';
+			}
+			await completeToolCall(callId, output, myTurn);
+		} catch {
+			await completeToolCall(
+				callId,
+				'Could not start that — the request failed. Tell the user it did not go through.',
+				myTurn
+			);
+		}
+	}
+
+	/**
+	 * F7: clear_task_queue must drain the CLIENT queue too, not just tell the server —
+	 * otherwise the model says "cleared" and the next gate-open reads out every result
+	 * anyway, making the tool's own promise false. The drain is conditional on server
+	 * success specifically so client and server state can never diverge.
+	 */
+	async function clearTaskQueue(callId: string, myTurn: number) {
+		let output: string;
+		try {
+			const res = await fetch('/api/tasks/clear', {
+				method: 'POST',
+				credentials: 'same-origin'
+			});
+			const body = (await res.json().catch(() => null)) as { ok?: boolean; count?: number } | null;
+			if (body?.ok) {
+				// Staleness guard (same idiom as completeToolCall's own top-of-function check) —
+				// a genuinely in-flight claim or report turn that started during this await must
+				// not be clobbered by an optimistic local wipe for a dead/superseded turn.
+				if (!destroyed && myTurn === turnId) {
+					setPendingReports([]);
+					claimedReports = [];
+					if (reportSettleTimer !== null) {
+						clearTimeout(reportSettleTimer);
+						reportSettleTimer = null;
+					}
+					clearReportRecheck();
+					claimInFlight = false;
+					reportTurnId = null;
+					reportTurnBlocksTools = false;
+					reportTurnSpoke = false;
+					reportTurnGotCreated = false;
+					reportTurnWasAutoTriggered = false;
+					// inFlightTaskIds is deliberately left untouched here: the route (clear/
+					// +server.ts) never cancels 'running' tasks, so they're still genuinely in
+					// flight after this clears. Any 'queued' id that WAS cleared is removed by
+					// this tab's own task.cleared bus event arriving via SSE (handleTaskEvent),
+					// not optimistically here — that keeps the set in sync with server truth
+					// instead of guessing which ids the clear actually touched.
+				}
+				output = `Cleared ${body.count ?? 0} pending item(s).`;
+			} else {
+				output = 'Could not clear the queue — storage unavailable. Nothing was cleared.';
+			}
+		} catch {
+			output = 'Could not clear the queue — the request failed. Nothing was cleared.';
+		}
+		await completeToolCall(callId, output, myTurn);
+	}
+
+	async function postAck(
+		mode: 'claim' | 'confirm' | 'release',
+		ids: string[],
+		spoken?: boolean
+	): Promise<{ ok?: boolean; claimed?: PublicTask[]; count?: number } | null> {
+		try {
+			const res = await fetch('/api/tasks/ack', {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ mode, ids, ...(spoken !== undefined ? { spoken } : {}) })
+			});
+			return await res.json().catch(() => null);
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * Any function that can abandon an in-flight report turn mid-way (error/fail/failRaw/
+	 * confirmCancelHermes/setTalkMode/destroy) calls this. Pushes whatever was claimed back
+	 * onto the FRONT of pendingReports (dedupe by id — it was next up, restore it there) and
+	 * releases the claim server-side so it isn't stranded in 'reporting' status. No-op if no
+	 * report turn is in flight.
+	 */
+	function releaseReportTurn(spoken: boolean) {
+		if (reportTurnId === null) {
+			// A PTT-rider claim can land (claimForRider()) before finishListening() consumes
+			// it into a real report turn — reportTurnId stays null the whole time. Abandoning
+			// in that window must still release the claim server-side, or it's stranded in
+			// 'reporting' for the full TTL with nothing left locally to remember it.
+			if (claimedReports.length > 0) {
+				void postAck(
+					'release',
+					claimedReports.map((t) => t.id),
+					spoken
+				);
+			}
+			claimedReports = [];
+			return;
+		}
+		// Live-trace bug 2: this turn's unpromptedReportStreak increment (speakReports()'s
+		// trigger === 'auto' branch) only sticks if the turn actually spoke — every call site
+		// here (error handler, fail/failRaw/confirmCancelHermes, disarmHandsfree/
+		// interruptSpeaking/setTalkMode/destroy) is exactly the "abandoned before speaking"
+		// case, so undo it here, floored at 0. Read reportTurnWasAutoTriggered/reportTurnSpoke
+		// BEFORE they're reset below. Gated on reportTurnWasAutoTriggered so chip and PTT/typed
+		// rider turns (which never increment the streak) are untouched.
+		if (reportTurnWasAutoTriggered && !reportTurnSpoke) {
+			unpromptedReportStreak = Math.max(0, unpromptedReportStreak - 1);
+		}
+		const toRestore = claimedReports;
+		const ids = toRestore.map((t) => t.id);
+		claimedReports = [];
+		reportTurnId = null;
+		reportTurnBlocksTools = false;
+		reportTurnSpoke = false;
+		reportTurnGotCreated = false;
+		reportTurnWasAutoTriggered = false;
+		if (ids.length === 0) return;
+		const existingIds = new SvelteSet(pendingReports.map((t) => t.id));
+		setPendingReports([...toRestore.filter((t) => !existingIds.has(t.id)), ...pendingReports]);
+		void postAck('release', ids, spoken);
+	}
+
+	/**
+	 * F5/F8 — PTT (and typed-turn) rider support: claims a batch in the background WITHOUT
+	 * starting a response turn itself, populating `claimedReports` for the upcoming real
+	 * turn (finishListening()/sendText()) to pick up as a rider. Guards against overlapping
+	 * with an in-flight claim or an already-active report turn.
+	 */
+	async function claimForRider(): Promise<PublicTask[]> {
+		if (claimInFlight || reportTurnId !== null) return [];
+		const batch = selectBatch(pendingReports, MAX_REPORTS_PER_TURN);
+		if (batch.length === 0) return [];
+		claimInFlight = true;
+		let claimed: PublicTask[];
+		try {
+			const body = await postAck(
+				'claim',
+				batch.map((t) => t.id)
+			);
+			claimed = body?.ok ? (body.claimed ?? []) : [];
+		} finally {
+			claimInFlight = false;
+		}
+		if (destroyed) {
+			// The session died while the claim round-trip was in flight — don't populate
+			// state on a dead session. Hand the claim straight back to the server instead of
+			// stranding it in 'reporting' for the full TTL with nothing left to release it.
+			if (claimed.length > 0) {
+				void postAck(
+					'release',
+					claimed.map((t) => t.id),
+					false
+				);
+			}
+			return [];
+		}
+		const claimedIds = new SvelteSet(claimed.map((t) => t.id));
+		setPendingReports(
+			pendingReports.filter((t) => !batch.some((b) => b.id === t.id) || claimedIds.has(t.id))
+		);
+		if (claimed.length > 0) claimedReports = claimed;
+		return claimed;
+	}
+
+	/**
+	 * F1/F11 — claim → speak → confirm/release. `trigger: 'auto'` is gated by
+	 * shouldAutoReportNow() (re-checked AFTER the claim round-trip — state can change during
+	 * it); `trigger: 'chip'` is user-initiated (LazicLounge's report chip), so it's allowed
+	 * to speak even in PTT/otherwise-gated states, but must still not fire mid-response.
+	 */
+	async function speakReports(trigger: 'auto' | 'chip') {
+		if (trigger === 'chip') {
+			// A chip tap is real user engagement — same "the monologue can stop now" signal as
+			// the other real-user-turn sites below, even though this function may still end up
+			// returning early (guards below, or the gate itself). Reopens a previously
+			// streak-capped poll (see scheduleReportRecheck()'s own MAX_UNPROMPTED_REPORT_STREAK
+			// guard) — harmless no-op if a timer is already scheduled.
+			unpromptedReportStreak = 0;
+			scheduleReportRecheck();
+		}
+		if (claimInFlight || reportTurnId !== null) return;
+		const batch = selectBatch(
+			pendingReports,
+			trigger === 'auto' ? MAX_AUTO_REPORTS_PER_TURN : MAX_REPORTS_PER_TURN
+		);
+		if (batch.length === 0) return;
+		claimInFlight = true;
+		let claimed: PublicTask[];
+		try {
+			const body = await postAck(
+				'claim',
+				batch.map((t) => t.id)
+			);
+			claimed = body?.ok ? (body.claimed ?? []) : [];
+		} finally {
+			claimInFlight = false;
+		}
+
+		const claimedIds = new SvelteSet(claimed.map((t) => t.id));
+		// Drop from the local FIFO anything we asked for that we did NOT win (another tab
+		// claimed it first) — silently. Items we DID win stay for now (two-phase: only
+		// removed once the gate is confirmed to pass, below).
+		setPendingReports(
+			pendingReports.filter((t) => !batch.some((b) => b.id === t.id) || claimedIds.has(t.id))
+		);
+		if (claimed.length === 0) {
+			// Lost the claim race, or the claim request itself failed — whatever else is still
+			// pending has nothing else checking the gate right now, so arm the poll for it.
+			scheduleReportRecheck();
+			return;
+		}
+
+		// F1: re-check the gate AFTER the await — state can have changed during the round trip.
+		// Chip trigger must not fire while a response may still be active (not just
+		// state !== 'speaking' — 'thinking' is a response in flight too): firing then would
+		// collide with the in-flight response.create, get swallowed as a benign collision,
+		// and then the PRE-EXISTING response's own response.done (whose myTurn now equals the
+		// just-bumped reportTurnId) would incorrectly confirm this claim as spoken —
+		// permanently dropping results that were never actually read out.
+		const gateOk =
+			trigger === 'chip'
+				? !destroyed && !!client?.ready && !responseMayBeActive()
+				: shouldAutoReportNow(currentReportGateInput());
+		if (!gateOk) {
+			// Reentrancy fix: re-arm claimInFlight across this release round-trip. Without it,
+			// there's a window (claimInFlight already false from the finally above, reportTurnId
+			// still null) where a poll-triggered speakReports('auto') could land, see this batch
+			// as unclaimed-and-idle, and re-claim ids that are mid-release server-side.
+			claimInFlight = true;
+			try {
+				await postAck('release', [...claimedIds], false);
+			} finally {
+				claimInFlight = false;
+			}
+			setPendingReports([
+				...pendingReports,
+				...claimed.filter((t) => !pendingReports.some((p) => p.id === t.id))
+			]);
+			// Gate failed after the claim/release round trip — the restored items are pending
+			// again with nothing armed to recheck them; don't rely on some unrelated future
+			// event to eventually re-trigger the gate.
+			scheduleReportRecheck();
+			return;
+		}
+
+		turnId += 1;
+		const myTurn = turnId;
+		reportTurnId = myTurn;
+		reportTurnBlocksTools = true;
+		reportTurnSpoke = false;
+		reportTurnGotCreated = false;
+		// Live-trace bug 2: only the trigger === 'auto' path below ever increments
+		// unpromptedReportStreak — this flag remembers that fact for THIS turn so
+		// releaseReportTurn()/response.done can undo the increment if the turn never
+		// actually speaks (see their doc comments). Reset false alongside its siblings
+		// above at every reportTurnId assignment site; chip turns never increment the
+		// streak, so they stay false.
+		reportTurnWasAutoTriggered = trigger === 'auto';
+		claimedReports = claimed;
+		setPendingReports(pendingReports.filter((t) => !claimedIds.has(t.id)));
+
+		const instructions = buildTaskReportResponseInstructions(claimed, persona, getLocale());
+		playback?.interrupt();
+		state = 'thinking';
+		syncMicSend();
+		statusOverride = null;
+		// Protocol-level tool restriction (primary defense, live-trace bug 1a) — the
+		// instructions above already say "do not call any tools this turn"; tool_choice:
+		// 'none' backs that with a hard per-response override so the model can't dispatch a
+		// duplicate/unwanted tool call instead of speaking the report. See
+		// handleFunctionCallDone() for the client-side guard (1b) backing this up.
+		// Live-trace bug 1: xAI has been observed to silently hang (no response.created,
+		// no error) when tool_choice: 'none' is sent — never confirmed supported there.
+		// OpenAI's support is confirmed, so keep sending it there; xAI relies solely on
+		// the 1b client-side guard in handleFunctionCallDone() instead.
+		client?.respond({
+			...(instructions ? { instructions } : {}),
+			...(activeProvider() === 'openai' ? { tool_choice: 'none' as const } : {})
+		});
+		lastReportTurnAt = Date.now();
+		if (trigger === 'auto') unpromptedReportStreak += 1;
+		clearThinkTimer();
+		thinkTimer = setTimeout(() => {
+			if (destroyed || myTurn !== turnId) return;
+			if (state === 'thinking' && !hermesBridgeActive) {
+				fail('error.noReply');
+			}
+		}, THINK_TIMEOUT_MS);
+		// Live-trace: xAI has been confirmed (wire trace + live reproduction) to sometimes
+		// silently drop this exact out-of-band response.create — no response.created, no
+		// error, nothing — for the full THINK_TIMEOUT_MS, at which point the turn would
+		// otherwise fail and require a manual chip resurface. A byte-identical retry of the
+		// same request has been observed to succeed in under 200ms. One-shot: if
+		// response.created still hasn't landed for this turn by 5s in, resend the exact same
+		// respond() call once; the 18s thinkTimer above remains the true final fallback if
+		// even the retry gets no response.
+		setTimeout(() => {
+			if (destroyed || myTurn !== turnId) return;
+			if (reportTurnGotCreated) return;
+			if (state !== 'thinking' || hermesBridgeActive) return;
+			client?.respond({
+				...(instructions ? { instructions } : {}),
+				...(activeProvider() === 'openai' ? { tool_choice: 'none' as const } : {})
+			});
+		}, 5000);
+	}
+
+	/** User-initiated wrapper for LazicLounge's report chip. */
+	function speakPendingReports() {
+		void speakReports('chip');
+	}
+
+	function clearReportRecheck() {
+		if (reportRecheckTimer !== null) {
+			clearTimeout(reportRecheckTimer);
+			reportRecheckTimer = null;
+		}
+	}
+
+	/**
+	 * Re-checks shouldAutoReportNow() every REPORT_RECHECK_MS during pure silence — without
+	 * this poll, the relaxed pause/streak gate in taskReports.ts only ever gets evaluated at
+	 * the two pre-existing event-driven moments (a task settling, or a turn ending via
+	 * rearmListening()), so a report that arrives mid-silence could sit unspoken indefinitely.
+	 * No-ops (and self-quiesces) once the gate can no longer plausibly open: destroyed, not
+	 * hands-free/armed, nothing pending, or the unprompted streak is already capped (only a
+	 * real user turn — see the streak-reset sites — reopens it from there).
+	 *
+	 * Deliberately gated on launchAttemptSettled: scheduling this eagerly at connect could let
+	 * it win a race against consumeGreeting()'s own (up to GREET_WAIT_MS) prefetch wait and
+	 * speak a standalone report turn before the launch turn gets a chance to merge greeting +
+	 * reports into ONE response.create — see consumeGreeting()'s doc comment.
+	 */
+	function scheduleReportRecheck() {
+		if (reportRecheckTimer !== null) return;
+		if (!launchAttemptSettled) {
+			return;
+		}
+		if (destroyed || talkMode !== 'handsfree' || !handsfreeArmed) return;
+		if (pendingReports.length === 0) return;
+		if (unpromptedReportStreak >= MAX_UNPROMPTED_REPORT_STREAK) {
+			return;
+		}
+		reportRecheckTimer = setTimeout(() => {
+			reportRecheckTimer = null;
+			maybeAutoReport();
+		}, REPORT_RECHECK_MS);
+	}
+
+	/** Single entry point for every "is it time to auto-report?" check (task settling, a
+	 * hands-free turn rearming, the recheck poll itself) — speaks if the gate is open,
+	 * otherwise reschedules the poll so silence alone can still eventually open it. */
+	function maybeAutoReport() {
+		// Guards BOTH callers (the recheck poll below, and the task-completion settle timer in
+		// handleTaskEvent()) in one place — see scheduleReportRecheck()'s doc comment for the
+		// race this closes. consumeGreeting()'s own finally already calls scheduleReportRecheck()
+		// once this flips true, so nothing pending is lost by bailing here.
+		if (!launchAttemptSettled) {
+			return;
+		}
+		const gateOk = shouldAutoReportNow(currentReportGateInput());
+		if (gateOk) {
+			void speakReports('auto');
+			return;
+		}
+		scheduleReportRecheck();
+	}
+
+	function handleTaskSnapshot(tasks: PublicTask[], inFlight: number) {
+		// `inFlight` (a plain count from the server) is superseded by rebuilding
+		// inFlightTaskIds from the snapshot's full task list — this is the authoritative
+		// reconciliation point (every stream reconnect, e.g. on tab visibility change), so
+		// replace the set outright rather than merge, correcting any drift the non-idempotent
+		// counter used to accumulate between reconnects.
+		void inFlight;
+		const idsNow = tasks
+			.filter((t) => t.status === 'queued' || t.status === 'running')
+			.map((t) => t.id);
+		for (const id of [...inFlightTaskIds]) {
+			if (!idsNow.includes(id)) inFlightTaskIds.delete(id);
+		}
+		for (const id of idsNow) inFlightTaskIds.add(id);
+		let next = pendingReports;
+		for (const t of tasks) {
+			if (t.status === 'done' || t.status === 'failed') {
+				next = mergeReports(next, t);
+			}
+		}
+		setPendingReports(next);
+		// A task can finish entirely while the stream is disconnected (e.g. tab backgrounded),
+		// so no live bus event ever arms the settle timer for it — make sure the reconnect
+		// snapshot itself gets a poll armed for anything it just surfaced as pending.
+		scheduleReportRecheck();
+	}
+
+	function handleTaskEvent(ev: TaskBusEvent) {
+		// F3 fix: idempotent Set-based in-flight bookkeeping, pulled out to taskReports.ts
+		// (pure, unit-tested there) for the same reason as mergeReports/selectBatch — this
+		// closure has zero test coverage in this repo.
+		applyInFlightEvent(inFlightTaskIds, ev);
+		switch (ev.type) {
+			case 'task.done':
+			case 'task.failed':
+				setPendingReports(mergeReports(pendingReports, ev.task));
+				if (reportSettleTimer !== null) clearTimeout(reportSettleTimer);
+				reportSettleTimer = setTimeout(() => {
+					reportSettleTimer = null;
+					maybeAutoReport();
+				}, REPORT_SETTLE_MS);
+				return;
+			case 'task.cleared':
+				setPendingReports(pendingReports.filter((t) => !ev.ids.includes(t.id)));
+				return;
+			case 'task.reported':
+				// Another tab/consumer confirmed a report we still had pending locally
+				// (we lost the claim race) — drop it.
+				setPendingReports(pendingReports.filter((t) => t.id !== ev.id));
+				return;
+			case 'task.queued':
+			case 'task.running':
+			case 'task.progress':
+				// task.progress is display-only (e.g. a "still working…" label) — not acted on
+				// in v1. task.queued/task.running have no further local effect beyond the
+				// in-flight bookkeeping already applied above.
+				return;
+		}
+	}
+
+	function startTaskStream() {
+		if (!asyncTasksEnabled || destroyed) return;
+		if (!taskStream) {
+			taskStream = createTaskStream({
+				onSnapshot: handleTaskSnapshot,
+				onEvent: handleTaskEvent
+			});
+		}
+		taskStream.start();
+	}
+
+	function stopTaskStream() {
+		taskStream?.stop();
 	}
 
 	function handleFunctionCallDone(event: RealtimeServerEvent, myTurn: number) {
 		const name = typeof event.name === 'string' ? event.name : '';
 		const callId = typeof event.call_id === 'string' ? event.call_id : '';
 
-		let request = '';
+		// Live-trace bug 1b: defense in depth for 1a's tool_choice:'none' — if the model
+		// ignores that per-response restriction and calls a dispatch tool anyway during a
+		// protected report-only turn (reportTurnBlocksTools), decline it via its own
+		// function-call output instead of dispatching. Deliberately bypasses the
+		// outstandingToolCalls/completeToolCall funnel entirely: that funnel ends by calling
+		// client.respond() once the last outstanding call resolves, but this interception
+		// happens mid-way through a response the report turn already owns — calling respond()
+		// again here would collide with that active response. Sending the function output
+		// alone is sufficient; the model's already-in-flight response finishes on its own.
+		// reportTurnBlocksTools (not just reportTurnId !== null) matters here — a PTT/typed
+		// rider turn also sets reportTurnId, but its instructions deliberately allow tools
+		// (the user's own message may legitimately need one), so it must NOT be blocked.
+		// Also cover the greeting-only launch turn (reportTurnId stays null when there are no
+		// reports to claim) — its base framing forbids tools too, and needs the same
+		// client-side backstop for when the provider ignores tool_choice:'none'. turnId only
+		// ever increments, so myTurn === greetingTurnId can't false-positive-match a later,
+		// unrelated normal turn.
+		if (
+			((reportTurnId !== null && reportTurnBlocksTools) ||
+				(greetingTurnId !== null && myTurn === greetingTurnId)) &&
+			(name === 'start_task' || name === 'clear_task_queue')
+		) {
+			if (callId) {
+				client?.sendFunctionCallOutput(
+					callId,
+					'Not available right now — finish delivering the current report first.'
+				);
+			}
+			return;
+		}
+
+		// F2: reset the outstanding-call set whenever a new turn's batch starts, then
+		// register this call_id against it — completeToolCall() uses this to know when the
+		// LAST outstanding call of THIS response has resolved.
+		if (toolCallsTurn !== myTurn) {
+			toolCallsTurn = myTurn;
+			outstandingToolCalls = new SvelteSet();
+		}
+		if (callId) outstandingToolCalls.add(callId);
+
+		if (!callId) {
+			beginHermesWorkingUi(myTurn, DISPATCH_UI_TIMEOUT_MS);
+			fail('error.voiceToolError');
+			return;
+		}
+
+		if (name === 'start_task') {
+			let request: string;
+			let title: string | undefined;
+			let background = false;
+			try {
+				const args =
+					typeof event.arguments === 'string'
+						? (JSON.parse(event.arguments) as {
+								request?: unknown;
+								title?: unknown;
+								background?: unknown;
+							})
+						: {};
+				request = typeof args.request === 'string' ? args.request.trim() : '';
+				title = typeof args.title === 'string' && args.title.trim() ? args.title.trim() : undefined;
+				background = args.background === true;
+			} catch {
+				request = '';
+			}
+			beginHermesWorkingUi(myTurn, DISPATCH_UI_TIMEOUT_MS);
+			if (!request) {
+				void completeToolCall(
+					callId,
+					'Could not start that — missing request. Tell the user it did not go through.',
+					myTurn
+				);
+				return;
+			}
+			void dispatchTask(callId, request, title, myTurn, background);
+			return;
+		}
+
+		if (name === 'clear_task_queue') {
+			beginHermesWorkingUi(myTurn, DISPATCH_UI_TIMEOUT_MS);
+			void clearTaskQueue(callId, myTurn);
+			return;
+		}
+
 		if (name === 'ask_hermes') {
+			// Legacy blocking bridge — only reachable when the VOICE_ASYNC_TASKS kill switch
+			// is off (Part F): the provider only ever registers this tool name in that case.
+			// runHermesBridge() itself is untouched by this feature.
+			let request: string;
 			try {
 				const args =
 					typeof event.arguments === 'string'
@@ -1148,58 +2215,24 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 			} catch {
 				request = '';
 			}
-		}
-
-		beginHermesWorkingUi(myTurn);
-
-		if (!callId) {
-			fail('error.voiceToolError');
+			beginHermesWorkingUi(myTurn);
+			if (!request) {
+				void completeToolCall(callId, 'Hermes unavailable: missing request', myTurn);
+				return;
+			}
+			// runHermesBridge() bypasses the outstandingToolCalls/completeToolCall funnel
+			// entirely — it does its own independent sendFunctionCallOutput/respond() and is
+			// deliberately left untouched by this feature. So this id must be removed here: if
+			// two function_call items ever land in one turn on this kill-switch path, the
+			// second one (routed through completeToolCall) would otherwise see this id still
+			// present, never treat itself as "the last one", and never call respond().
+			outstandingToolCalls.delete(callId);
+			void runHermesBridge(callId, request, myTurn);
 			return;
 		}
 
-		if (name !== 'ask_hermes') {
-			void (async () => {
-				try {
-					await playback?.whenIdle();
-					if (destroyed || myTurn !== turnId) return;
-					client?.sendFunctionCallOutput(
-						callId,
-						quarantineHermesToolOutput(`Hermes unavailable: unknown tool ${name || '(empty)'}`)
-					);
-					await playback?.whenIdle();
-					if (destroyed || myTurn !== turnId) return;
-					client?.respond();
-					endHermesBridgeUi();
-					statusOverride = null;
-				} catch {
-					fail('error.voiceToolError');
-				}
-			})();
-			return;
-		}
-
-		if (!request) {
-			void (async () => {
-				try {
-					await playback?.whenIdle();
-					if (destroyed || myTurn !== turnId) return;
-					client?.sendFunctionCallOutput(
-						callId,
-						quarantineHermesToolOutput('Hermes unavailable: missing request')
-					);
-					await playback?.whenIdle();
-					if (destroyed || myTurn !== turnId) return;
-					client?.respond();
-					endHermesBridgeUi();
-					statusOverride = null;
-				} catch {
-					fail('error.voiceToolError');
-				}
-			})();
-			return;
-		}
-
-		void runHermesBridge(callId, request, myTurn);
+		beginHermesWorkingUi(myTurn, DISPATCH_UI_TIMEOUT_MS);
+		void completeToolCall(callId, `Hermes unavailable: unknown tool ${name || '(empty)'}`, myTurn);
 	}
 
 	function handleServerEvent(event: RealtimeServerEvent, myTurn: number) {
@@ -1221,11 +2254,25 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 				const msg = (typeof event.error?.message === 'string' && event.error.message) || '';
 				// Idle response.cancel (mode switch / disarm) — ignore, do not tear down UI.
 				if (msg && isBenignCancelError(msg)) return;
-				// Greeting-triggered response failed — a nice-to-have, never a hard failure.
-				// Log quietly and fall back to normal listening; never surface an error banner.
-				if (greetingTurnId !== null && myTurn === greetingTurnId) {
-					console.warn('Hermes Voice: auto-greet response failed, continuing silently');
-					greetingTurnId = null;
+				// F2: a parallel-tool-call race can still collide two respond() calls despite
+				// completeToolCall()'s funnel (see its doc comment) — this is the second
+				// benign case. The existing think-timer remains the real backstop if a turn
+				// genuinely stalls.
+				if (msg && isBenignResponseCollision(msg, event.error?.code)) {
+					console.warn('Hermes Voice: benign response collision, continuing');
+					return;
+				}
+				// Greeting/report-launch-triggered response failed — a nice-to-have, never a
+				// hard failure. Log quietly and fall back to normal listening; never surface
+				// an error banner. E10 sets both greetingTurnId and reportTurnId to the same
+				// myTurn for a merged launch turn, so both are handled together here.
+				if (
+					(greetingTurnId !== null && myTurn === greetingTurnId) ||
+					(reportTurnId !== null && myTurn === reportTurnId)
+				) {
+					console.warn('Hermes Voice: auto-greet/task-report response failed, continuing silently');
+					if (greetingTurnId !== null && myTurn === greetingTurnId) greetingTurnId = null;
+					if (reportTurnId !== null && myTurn === reportTurnId) releaseReportTurn(true);
 					clearThinkTimer();
 					busy = false;
 					suppressIdleForTool = false;
@@ -1267,6 +2314,8 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 				// Keep capture running while armed; only gate appends during thinking.
 				turnId += 1;
 				const stoppedTurn = turnId;
+				unpromptedReportStreak = 0;
+				scheduleReportRecheck();
 				busy = true;
 				state = 'thinking';
 				syncMicSend();
@@ -1291,6 +2340,14 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 				// Fresh caption turn for each assistant response (incl. post-Hermes).
 				startCaptionTurn();
 				captionDbg.log('response_created', captionSnap());
+				// Live-trace xAI silent-drop fix: mark this report turn's response.create as
+				// acknowledged. Must run before the WebRTC-only early return below — xAI (the
+				// provider this fix targets) never uses media tracks and would otherwise never
+				// reach this line.
+				if (reportTurnId !== null && myTurn === reportTurnId) reportTurnGotCreated = true;
+				// Reset per-response audio tracking before the WebRTC-only early return below,
+				// so it resets on every new response regardless of provider.
+				responseHadAudio = false;
 				// WebRTC has no PCM deltas — enter speaking when the response starts.
 				if (!client?.usesMediaTracks) return;
 				if (state !== 'thinking' && state !== 'speaking') return;
@@ -1307,12 +2364,24 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 			}
 			case 'response.output_audio_transcript.delta': {
 				if (typeof event.delta !== 'string' || !event.delta) return;
+				// Live-trace bug 2: mark this report turn as having actually said something —
+				// response.done below only confirms (permanently drops the result) when this
+				// fired at least once; a turn that produced zero speech gets released instead.
+				if (reportTurnId !== null && myTurn === reportTurnId) reportTurnSpoke = true;
+				responseHadAudio = true;
 				appendCaptionDelta(event.delta);
 				transcript?.appendAssistantDelta(event.delta);
 				return;
 			}
 			case 'response.output_audio.delta': {
 				if (typeof event.delta !== 'string' || !event.delta) return;
+				// Same reportTurnSpoke marking as the transcript-delta case above — both
+				// providers currently always emit transcript deltas alongside audio deltas, so
+				// this isn't fixing an active bug, but guards against a turn the user actually
+				// heard being incorrectly treated as silent (and re-read) if transcript delta
+				// emission were ever dropped/throttled while audio still played.
+				if (reportTurnId !== null && myTurn === reportTurnId) reportTurnSpoke = true;
+				responseHadAudio = true;
 				if (state !== 'thinking' && state !== 'speaking') return;
 				const enteredSpeaking = state !== 'speaking';
 				clearThinkTimer();
@@ -1333,6 +2402,50 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 				// failure path) — clear structurally rather than relying on the next turnId
 				// bump to make a stale value harmless.
 				if (greetingTurnId !== null && myTurn === greetingTurnId) greetingTurnId = null;
+				// F11: confirm on response.done, NOT at inject time — the report was actually
+				// delivered (or at least attempted-and-completed) only once this response is
+				// done. Fire-and-forget; the server drops `result` on confirm.
+				// Live-trace bug 2: confirming unconditionally here was wrong — a turn can
+				// reach response.done having produced zero output_audio_transcript.delta
+				// events (e.g. diverted into an unwanted tool call instead of speaking, see
+				// bug 1), and confirming that permanently drops the result server-side even
+				// though the user never heard it. Only confirm when reportTurnSpoke is true;
+				// otherwise release it unspoken (same mechanism the abandonment paths use) and
+				// put it back in pendingReports so it's reportable again.
+				if (reportTurnId !== null && myTurn === reportTurnId) {
+					reportTurnId = null;
+					reportTurnBlocksTools = false;
+					const claimed = claimedReports;
+					claimedReports = [];
+					const ids = claimed.map((t) => t.id);
+					if (ids.length > 0) {
+						if (reportTurnSpoke) {
+							void postAck('confirm', ids);
+						} else {
+							// Live-trace bug 2: this turn reached response.done having said
+							// nothing — the same "abandoned before speaking" case releaseReportTurn()
+							// undoes the streak increment for, but this branch bypasses
+							// releaseReportTurn() entirely, so do it here too (floored at 0).
+							if (reportTurnWasAutoTriggered) {
+								unpromptedReportStreak = Math.max(0, unpromptedReportStreak - 1);
+							}
+							// Live-trace bug (QC pass): spoken:true here, not false — this is the
+							// "ambiguous spoken attempt" case (response.done reached with zero
+							// transcript deltas, e.g. diverted into a declined tool call instead of
+							// speaking). It must count against the retry budget via `attempts`, or a
+							// provider that keeps ignoring tool_choice:'none' produces a report that's
+							// never delivered AND never retired — stuck in pendingReports forever.
+							void postAck('release', ids, true);
+							setPendingReports([
+								...pendingReports,
+								...claimed.filter((t) => !pendingReports.some((p) => p.id === t.id))
+							]);
+						}
+					}
+					reportTurnSpoke = false;
+					reportTurnGotCreated = false;
+					reportTurnWasAutoTriggered = false;
+				}
 				// Always fade captions when this response ends (even if bridge suppressed idle).
 				const shouldSettleUi = !hermesBridgeActive && !suppressIdleForTool;
 				captionDbg.log('response_done', captionSnap({ shouldSettleUi }));
@@ -1344,23 +2457,31 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 				const usesMediaTracks = !!client?.usesMediaTracks;
 				void (async () => {
 					if (myTurn !== turnId) return;
-					if (shouldSettleUi) {
-						clearThinkTimer();
-						if (usesMediaTracks) {
+					if (usesMediaTracks) {
+						// Resolve WebRTC remote-audio bookkeeping back to false unconditionally —
+						// this must NOT stay gated behind shouldSettleUi/suppressIdleForTool, or a
+						// function-call-only response (no audio) leaves remoteActive stuck true
+						// forever, deadlocking completeToolCall()'s `await playback?.whenIdle()`.
+						// Only wait for the real end-of-playback signal when this response actually
+						// had audio in flight — nothing to wait for otherwise.
+						if (responseHadAudio) {
 							captionDbg.log('wait_playback_stopped_start', captionSnap());
 							await waitForOutputAudioBufferStopped();
 							captionDbg.log('wait_playback_stopped_done', captionSnap());
 							if (destroyed || myTurn !== turnId) return;
-							if (hermesBridgeActive || suppressIdleForTool) return;
-							playback?.setRemoteActive(false);
-						} else {
+						}
+						playback?.setRemoteActive(false);
+					}
+					if (shouldSettleUi) {
+						clearThinkTimer();
+						if (!usesMediaTracks) {
 							playback?.setRemoteActive(false);
 							captionDbg.log('wait_idle_start', captionSnap());
 							await playback?.whenIdle();
 							captionDbg.log('wait_idle_done', captionSnap());
 							if (destroyed || myTurn !== turnId) return;
-							if (hermesBridgeActive || suppressIdleForTool) return;
 						}
+						if (hermesBridgeActive || suppressIdleForTool) return;
 					}
 					beginCaptionFade();
 					if (!shouldSettleUi) return;
@@ -1426,15 +2547,19 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 				onEvent: (ev: RealtimeServerEvent) => handleServerEvent(ev, turnId),
 				onError: (message: string) => {
 					if (destroyed) return;
+					// attemptAutoReconnect() tries the automatic path first now, falling back to
+					// the same needsReconnect-driven manual UI only if that doesn't succeed. See
+					// its doc comment for the onError/onClose idempotence guard (both fire for a
+					// single provider-side failure). The raw message is passed through so a
+					// final failure can still surface a specific error instead of a generic one
+					// — see attemptAutoReconnect()'s mapConnectErrorMessage() seeding.
 					if (state !== 'idle' || handsfreeArmed) {
 						// Transport-level failure — the socket/peer connection is dead or
 						// dying. Force the same full teardown+reconnect as onClose (below)
 						// rather than quietly reverting to idle while holding a broken
 						// client/token, which previously left the app looking "fine" on a
 						// connection that could no longer deliver anything.
-						const mapped = CONNECT_ERROR_CODES[message as keyof typeof CONNECT_ERROR_CODES];
-						if (mapped) fail(mapped, { reconnect: true });
-						else failRaw(message, { reconnect: true });
+						attemptAutoReconnect('onError', message);
 					}
 				},
 				onClose: () => {
@@ -1445,7 +2570,7 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 						state === 'speaking' ||
 						handsfreeArmed
 					) {
-						fail('error.connectionLost', { reconnect: true });
+						attemptAutoReconnect('onClose');
 					}
 				},
 				onRemoteStream: (stream: MediaStream) => {
@@ -1472,10 +2597,17 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 					// Model id itself is resolved provider-side (each provider's own client.ts
 					// falls back to its own default transcription model) — this only signals
 					// "on" for a binding that opted in. See VoicePersona.reviewConversationForMemory.
-					inputTranscription: persona.reviewConversationForMemory ? { model: '' } : null
+					inputTranscription: persona.reviewConversationForMemory ? { model: '' } : null,
+					// VOICE_ASYNC_TASKS kill switch (Part F) — gates which tools this client
+					// registers on session.update (see tools.ts's resolveVoiceTools()).
+					asyncTasksEnabled
 				});
 				try {
-					const instructions = buildHermesVoiceInstructions(getLocale(), persona);
+					const instructions = buildHermesVoiceInstructions(
+						getLocale(),
+						persona,
+						asyncTasksEnabled
+					);
 					const vad = turnDetectionForMode();
 					if (rt.usesMediaTracks) {
 						const ctx = await ensureAudio();
@@ -1582,21 +2714,54 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		// One attempt per tab session, success or failure — mark before awaiting anything.
 		markGreetedThisSession();
 		const prefetch = greetingPrefetch;
-		if (!prefetch) return;
 
 		try {
+			if (!prefetch) return;
 			const text = await Promise.race([
 				prefetch,
 				new Promise<string | null>((resolve) => setTimeout(() => resolve(null), GREET_WAIT_MS))
 			]);
 
-			if (!text) return;
 			if (destroyed) return;
 			if (startTurn !== turnId) return; // user's turn has moved on since kickoff
 			if (state !== 'listening') return;
 			if (userSpeechActive) return; // user is already mid-utterance — their turn wins
 			if (hermesBridgeActive) return;
 			if (!client?.ready) return;
+			if (reportTurnId !== null || claimInFlight) return;
+
+			// F4: claim any pending task reports so the launch turn can report AND greet in
+			// ONE response.create — never two. The pendingReports check is deliberately AFTER
+			// the Promise.race above: state changes during that up-to-12s window routinely
+			// (the task-stream snapshot commonly lands in it), so checking before the await
+			// would read stale/empty state.
+			let claimed: PublicTask[] = [];
+			if (pendingReports.length > 0) {
+				const batch = selectBatch(pendingReports, MAX_REPORTS_PER_TURN);
+				launchClaimInFlight = true;
+				try {
+					const body = await postAck(
+						'claim',
+						batch.map((t) => t.id)
+					);
+					claimed = body?.ok ? (body.claimed ?? []) : [];
+				} finally {
+					launchClaimInFlight = false;
+				}
+				const claimedIds = new SvelteSet(claimed.map((t) => t.id));
+				setPendingReports(
+					pendingReports.filter((t) => !batch.some((b) => b.id === t.id) || claimedIds.has(t.id))
+				);
+
+				// Re-check guards AGAIN after this second await — same staleness risk as the
+				// first await above.
+				if (destroyed || startTurn !== turnId || state !== 'listening' || userSpeechActive) {
+					if (claimed.length > 0) void postAck('release', [...claimedIds], false);
+					return;
+				}
+			}
+
+			if (!text && claimed.length === 0 && inFlightTaskCount === 0) return; // nothing to say
 
 			busy = true;
 			statusOverride = null;
@@ -1616,10 +2781,50 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 			syncMicSend();
 			statusOverride = null;
 
-			greetingTurnId = myTurn;
+			// Both greetingTurnId and reportTurnId get set to the SAME myTurn when both a
+			// greeting and reports are present, so both the existing greeting error-tolerance
+			// path and the confirm-on-response.done hook (F11) correctly apply to this one
+			// combined turn.
+			if (claimed.length > 0) {
+				reportTurnId = myTurn;
+				reportTurnBlocksTools = true;
+				reportTurnSpoke = false;
+				reportTurnGotCreated = false;
+				// Not the trigger === 'auto' speakReports() path — this turn seeds the streak
+				// directly below (to 1) rather than incrementing it. Still flagged true: the
+				// decrement on failure (Math.max(0, streak - 1)) is correct either way, and this
+				// is the highest-risk turn for a silent failure (the very first response.create
+				// of the session) — without this, a failed launch report would permanently burn
+				// 1 of 2 budgeted unprompted turns for nothing actually said to the user.
+				reportTurnWasAutoTriggered = true;
+				claimedReports = claimed;
+				setPendingReports(pendingReports.filter((t) => !claimed.some((c) => c.id === t.id)));
+				lastReportTurnAt = Date.now();
+				// The launch turn counts as one unprompted assistant turn — same accounting as
+				// speakReports('auto'), just seeded straight to 1 rather than incremented, since
+				// there's no prior streak to add to at session launch.
+				unpromptedReportStreak = 1;
+			}
+			if (text) greetingTurnId = myTurn;
+
+			const instructions = buildLaunchResponseInstructions({
+				greetingText: text ?? null,
+				reports: claimed,
+				inFlightCount: inFlightTaskCount,
+				persona,
+				locale: getLocale()
+			});
+			// Protocol-level tool restriction (live-trace bug 1a) — buildLaunchResponseInstructions
+			// always ends with "Do not call any tools this turn" whenever it fires at all
+			// (greeting, reports, or in-flight mention), so this gets the same tool_choice
+			// treatment as speakReports() above: OpenAI only (live-trace bug 1 — xAI has been
+			// observed to silently hang on tool_choice: 'none', never confirmed supported there).
 			client.send({
 				type: 'response.create',
-				response: { instructions: buildGreetingResponseInstructions(text, persona) }
+				response: {
+					...(instructions ? { instructions } : {}),
+					...(activeProvider() === 'openai' ? { tool_choice: 'none' as const } : {})
+				}
 			});
 
 			clearThinkTimer();
@@ -1629,8 +2834,42 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 					fail('error.noReply');
 				}
 			}, THINK_TIMEOUT_MS);
+			// Live-trace: xAI has been confirmed (wire trace + live reproduction) to sometimes
+			// silently drop this exact out-of-band response.create — no response.created, no
+			// error, nothing — for the full THINK_TIMEOUT_MS, at which point the turn would
+			// otherwise fail and require a manual chip resurface. A byte-identical retry of the
+			// same request has been observed to succeed in under 200ms. One-shot: if
+			// response.created still hasn't landed for this turn by 5s in, resend the exact same
+			// send() call once; the 18s thinkTimer above remains the true final fallback if even
+			// the retry gets no response. reportTurnGotCreated is only ever flipped true for the
+			// turn that reportTurnId points at (see the response.created handler), so this retry
+			// only fires when this launch turn actually carried claimed reports (reportTurnId was
+			// set to myTurn above) — a pure-greeting-only launch (no reports claimed) has no
+			// per-turn "created" signal to check here and is left to the 18s thinkTimer alone,
+			// same as before this fix.
+			setTimeout(() => {
+				if (destroyed || myTurn !== turnId) return;
+				if (reportTurnId !== myTurn) return;
+				if (reportTurnGotCreated) return;
+				if (state !== 'thinking' || hermesBridgeActive) return;
+				client?.send({
+					type: 'response.create',
+					response: {
+						...(instructions ? { instructions } : {}),
+						...(activeProvider() === 'openai' ? { tool_choice: 'none' as const } : {})
+					}
+				});
+			}, 5000);
 		} catch {
-			// Greeting is a nice-to-have — never let it surface an error or break the session.
+			// Greeting/report launch is a nice-to-have — never let it surface an error or
+			// break the session.
+		} finally {
+			// Whether this attempt greeted, reported, did both, did nothing, or errored out —
+			// it has now had its one chance to merge pending reports into this launch turn.
+			// Safe for the recheck poll to run from here on; resume it in case reports arrived
+			// (or are still pending) and nothing else has scheduled it yet.
+			launchAttemptSettled = true;
+			scheduleReportRecheck();
 		}
 	}
 
@@ -1665,8 +2904,18 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 	}
 
 	async function warm(): Promise<void> {
+		// Connect-time init for the report-pause gate — see lastAssistantTurnEndedAt's own doc
+		// comment. One-time (guarded, not stamped on every warm() call, including the periodic
+		// warmRecheckTimer retries and forceReconnect()): after the first real turn ends,
+		// rearmListening() is the ongoing source of truth for this value.
+		if (lastAssistantTurnEndedAt === 0) lastAssistantTurnEndedAt = Date.now();
 		prefetchGreeting();
 		attachNetworkWatch();
+		// Before the early-exit guard below — recoverConnection()/forceReconnect() both call
+		// warm() and both frequently hit that guard, so a dropped task stream needs its own
+		// unconditional restart path here (start() itself is idempotent and no-ops when the
+		// flag is off).
+		startTaskStream();
 		if (destroyed) return;
 		if (busy || state !== 'idle' || hermesBridgeActive) return;
 		if (warmInFlight) return warmInFlight;
@@ -1746,8 +2995,19 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 			if (destroyed || myTurn !== turnId || !handsfreeArmed) return;
 			mic.start();
 			state = 'listening';
+			// The single shared "a turn just ended, we're back to listening" site — every
+			// rearm path (normal end-of-turn, error recovery, cancel-triggered) runs through
+			// here, so stamping once here (rather than per-caller) covers all of them. See
+			// lastAssistantTurnEndedAt's own doc comment for why this is NOT stamped at
+			// response.done instead.
+			lastAssistantTurnEndedAt = Date.now();
 			syncMicSend();
 			statusOverride = override;
+			// F6/F7: the tail of a report turn itself runs through here (response.done ->
+			// rearmListening()) — the streak/cooldown (bumped + stamped inside speakReports
+			// when a report turn actually starts) is what stops this from immediately
+			// re-opening the gate for a second report turn right away.
+			maybeAutoReport();
 		} catch (err) {
 			if (destroyed || myTurn !== turnId) return;
 			hardDisarmCapture();
@@ -1771,6 +3031,9 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 	async function startListening() {
 		if (destroyed || busy || state !== 'idle') return;
 
+		// A deliberate user tap-to-talk should cancel and take over rather than race with a
+		// background auto-retry.
+		clearAutoReconnect();
 		busy = true;
 		statusOverride = null;
 		turnId += 1;
@@ -1813,12 +3076,36 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 			statusOverride = null;
 			pulse(12);
 
+			// F5/F8: PTT press — fire a background claim for any pending task reports so
+			// they're ready to ride the turn this press is about to produce (see
+			// claimForRider() and finishListening()'s use of claimedReports below).
+			// Deliberately fire-and-forget — must not delay the user starting to talk.
+			if (
+				talkMode === 'ptt' &&
+				pendingReports.length > 0 &&
+				!claimInFlight &&
+				reportTurnId === null
+			) {
+				void claimForRider();
+			}
+
 			// Auto-greet: hands-free only (see the C2 addendum — in PTT this would deadlock
 			// the tap-to-talk toggle against the greeting's own "thinking" state) and gated
 			// on the binding actually having it enabled and not already greeted this tab
 			// session. Fire-and-forget from here.
 			if (persona.autoGreet && talkMode === 'handsfree' && !hasGreetedThisSession()) {
+				// Re-arm the guard for this specific attempt — otherwise a prior startListening()
+				// call (e.g. before a PTT->handsfree switch) leaves this true forever and
+				// maybeAutoReport() would never wait out this attempt's prefetch window.
+				launchAttemptSettled = false;
 				void consumeGreeting(myTurn);
+			} else {
+				// No launch-turn attempt will ever happen for this session (or it already has,
+				// in an earlier startListening() — hasGreetedThisSession() only allows one) —
+				// safe for the report recheck poll to run immediately. See
+				// scheduleReportRecheck()'s doc comment for the race this guards.
+				launchAttemptSettled = true;
+				scheduleReportRecheck();
 			}
 		} catch (err) {
 			if (destroyed || myTurn !== turnId) {
@@ -1854,6 +3141,8 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 
 		turnId += 1;
 		const myTurn = turnId;
+		unpromptedReportStreak = 0;
+		scheduleReportRecheck();
 		// PTT: disable the same send track WebRTC added (must-fix — no second getUserMedia).
 		capture?.stop();
 		busy = true;
@@ -1863,7 +3152,27 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		pulse(8);
 
 		try {
-			client.commitAndRespond();
+			// F5/F8: if the background claim fired on press already landed, ride the
+			// results on this turn instead of a plain commitAndRespond — PTT never speaks
+			// unprompted, so this is the only way PTT users ever hear a background result.
+			if (claimedReports.length > 0) {
+				reportTurnId = myTurn;
+				// Rider turn — instructions deliberately allow tools (see
+				// buildTaskReportRiderInstructions), so this must stay false; not a stale
+				// leftover, see handleFunctionCallDone()'s doc comment.
+				reportTurnBlocksTools = false;
+				reportTurnSpoke = false;
+				reportTurnGotCreated = false;
+				// Rider turns never increment unpromptedReportStreak (see the flag's own doc
+				// comment) — not the trigger === 'auto' speakReports() path.
+				reportTurnWasAutoTriggered = false;
+				const riderReports = claimedReports;
+				const instructions = buildTaskReportRiderInstructions(riderReports, persona, getLocale());
+				lastReportTurnAt = Date.now();
+				client.commitAndRespond(instructions ? { instructions } : undefined);
+			} else {
+				client.commitAndRespond();
+			}
 		} catch {
 			fail('error.couldNotSendAudio');
 			return;
@@ -1887,10 +3196,15 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		const text = raw.trim();
 		if (!text || !canSendText) return;
 
+		// A pending auto-reconnect retry must not race a deliberate typed turn — same
+		// supersede-on-user-action reasoning as startListening()'s clearAutoReconnect() call.
+		clearAutoReconnect();
 		busy = true;
 		statusOverride = null;
 		turnId += 1;
 		const myTurn = turnId;
+		unpromptedReportStreak = 0;
+		scheduleReportRecheck();
 
 		try {
 			if (warmInFlight) {
@@ -1924,6 +3238,43 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 				}
 			}
 
+			// F5/F8 rider: race a claim against a short deadline — typed turns aren't as
+			// latency-critical as a released PTT button, so ~400ms is fine. If it doesn't
+			// resolve in time, skip the rider for THIS turn (it rides the next one or gets
+			// picked up by the chip); if it resolves late after this turn already started
+			// without it, release it (spoken:false) rather than leave it stranded.
+			let riderReports: PublicTask[] = [];
+			if (pendingReports.length > 0 && !claimInFlight && reportTurnId === null) {
+				const claimPromise = claimForRider();
+				const TIMED_OUT = Symbol('rider-claim-timeout');
+				const raced = await Promise.race([
+					claimPromise,
+					new Promise<typeof TIMED_OUT>((resolve) => setTimeout(() => resolve(TIMED_OUT), 400))
+				]);
+				if (raced === TIMED_OUT) {
+					void claimPromise.then((lateClaimed) => {
+						if (lateClaimed.length === 0 || reportTurnId !== null) return;
+						claimedReports = [];
+						void postAck(
+							'release',
+							lateClaimed.map((t) => t.id),
+							false
+						);
+						const existingIds = new SvelteSet(pendingReports.map((t) => t.id));
+						setPendingReports([
+							...pendingReports,
+							...lateClaimed.filter((t) => !existingIds.has(t.id))
+						]);
+					});
+				} else {
+					riderReports = raced;
+				}
+			}
+			if (destroyed || myTurn !== turnId) {
+				busy = false;
+				return;
+			}
+
 			playback?.interrupt();
 			captionUserEcho = truncateSnippet(text, 160);
 			captionUserEchoTurn = myTurn;
@@ -1935,7 +3286,24 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 
 			client?.sendUserText(text);
 			transcript?.noteUserText(text);
-			client?.respond();
+			if (riderReports.length > 0) {
+				reportTurnId = myTurn;
+				// Rider turn — instructions deliberately allow tools (see
+				// buildTaskReportRiderInstructions), so this must stay false; not a stale
+				// leftover, see handleFunctionCallDone()'s doc comment.
+				reportTurnBlocksTools = false;
+				reportTurnSpoke = false;
+				reportTurnGotCreated = false;
+				// Rider turns never increment unpromptedReportStreak (see the flag's own doc
+				// comment) — not the trigger === 'auto' speakReports() path.
+				reportTurnWasAutoTriggered = false;
+				claimedReports = riderReports;
+				lastReportTurnAt = Date.now();
+				const instructions = buildTaskReportRiderInstructions(riderReports, persona, getLocale());
+				client?.respond(instructions ? { instructions } : undefined);
+			} else {
+				client?.respond();
+			}
 
 			clearThinkTimer();
 			thinkTimer = setTimeout(() => {
@@ -1974,6 +3342,12 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		clearThinkTimer();
 		endHermesBridgeUi();
 		suppressIdleForTool = false;
+		clearReportRecheck();
+		// Sibling abandonment path to interruptSpeaking/setTalkMode/confirmCancelHermes/fail/
+		// failRaw/destroy — a PTT-rider claim (claimForRider()) can land with claimedReports
+		// populated even though reportTurnId itself can't be set yet when this runs; without
+		// this the claim would dangle server-side in 'reporting' for the full TTL.
+		releaseReportTurn(true);
 		pulse([10, 40, 10]);
 		safeCancelResponse();
 		try {
@@ -2002,6 +3376,12 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		if (talkMode === 'handsfree') {
 			handsfreeArmed = false;
 		}
+		// Not in the spec's literal enumeration of release-on-failure call sites, but a real
+		// abandonment path: a report turn can be in the 'speaking' state (response.done
+		// hasn't fired yet) when the user taps to interrupt it — without this, reportTurnId
+		// would dangle and its claim would never confirm or release until the server's
+		// REPORT_CLAIM_TTL_MS expiry.
+		releaseReportTurn(true);
 		pulse([10, 40, 10]);
 		safeCancelResponse();
 		try {
@@ -2061,12 +3441,14 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		suppressIdleForTool = false;
 		handsfreeArmed = false;
 		busy = false;
+		clearReportRecheck();
 		try {
 			hermesAbort?.abort();
 		} catch {
 			/* ignore */
 		}
 		hermesAbort = null;
+		releaseReportTurn(true);
 		safeCancelResponse();
 		try {
 			client?.clearInputBuffer();
@@ -2090,7 +3472,9 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 
 	function refreshInstructions() {
 		if (!client?.open) return;
-		client.updateInstructions(buildHermesVoiceInstructions(getLocale(), persona));
+		client.updateInstructions(
+			buildHermesVoiceInstructions(getLocale(), persona, asyncTasksEnabled)
+		);
 	}
 
 	/**
@@ -2102,6 +3486,8 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 	 */
 	async function forceReconnect(): Promise<void> {
 		if (destroyed || busy || state !== 'idle' || hermesBridgeActive || handsfreeArmed) return;
+		// A manual reconnect action always cancels/supersedes any pending automatic retry.
+		clearAutoReconnect();
 		try {
 			client?.close();
 		} catch {
@@ -2124,7 +3510,17 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		playbackStoppedResolve?.();
 		clearWaitRotation();
 		clearWarmRecheck();
+		// Without this, a pending retry timer keeps the whole session closure alive after
+		// teardown (a leak across SPA navigations) even though the generation guard makes its
+		// eventual fire a behavioral no-op.
+		clearAutoReconnect();
 		detachNetworkWatch();
+		stopTaskStream();
+		if (reportSettleTimer !== null) {
+			clearTimeout(reportSettleTimer);
+			reportSettleTimer = null;
+		}
+		clearReportRecheck();
 		clearCaptions();
 		captionDbg.destroy();
 		hermesWaitActivity = null;
@@ -2134,6 +3530,7 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 			/* ignore */
 		}
 		hermesAbort = null;
+		releaseReportTurn(true);
 		hermesBridgeActive = false;
 		suppressIdleForTool = false;
 		needsReconnect = false;
@@ -2230,6 +3627,9 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		get voiceFallbackNotice() {
 			return voiceFallbackNotice;
 		},
+		get pendingReportCount() {
+			return pendingReportCount;
+		},
 		warm,
 		toggle,
 		setTalkMode,
@@ -2237,6 +3637,7 @@ export function createVoiceDemo(opts: { persona?: VoicePersona } = {}) {
 		sendText,
 		refreshInstructions,
 		forceReconnect,
+		speakPendingReports,
 		destroy
 	};
 }

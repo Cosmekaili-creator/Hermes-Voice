@@ -22,8 +22,14 @@
 	let {
 		persona = DEFAULT_PERSONA,
 		provider,
-		isOwner = false
-	}: { persona?: VoicePersona; provider?: ProviderId; isOwner?: boolean } = $props();
+		isOwner = false,
+		asyncTasksEnabled = true
+	}: {
+		persona?: VoicePersona;
+		provider?: ProviderId;
+		isOwner?: boolean;
+		asyncTasksEnabled?: boolean;
+	} = $props();
 
 	let settingsOpen = $state(false);
 	let settingsSection = $state<'provider' | 'hermes'>('provider');
@@ -47,7 +53,10 @@
 	// Auth is cookie-only: SSR grants HttpOnly session from valid ?k=; SPA never retains the key.
 	// persona is tied to the authenticated binding for the life of this component (a change
 	// implies a different session entirely) — read once intentionally, not reactively.
-	const demo = createVoiceDemo({ persona: untrack(() => persona) });
+	const demo = createVoiceDemo({
+		persona: untrack(() => persona),
+		asyncTasksEnabled: untrack(() => asyncTasksEnabled)
+	});
 	const wakeLock = createScreenWakeLock();
 	/** Must match AnalyserNode.frequencyBinCount for fftSize 512 (not fftSize itself). */
 	const freqBuf = new Uint8Array(256);
@@ -347,6 +356,12 @@
 		{/if}
 		{#if demo.waitElapsedSec !== null}
 			<p class="status-timer" aria-live="off">{demo.waitElapsedSec}s</p>
+		{/if}
+		{#if demo.pendingReportCount > 0}
+			<button type="button" class="report-chip" onclick={() => demo.speakPendingReports()}>
+				<span class="report-chip__count">{demo.pendingReportCount}</span>
+				{pt('status.resultsReady')}
+			</button>
 		{/if}
 	</div>
 
@@ -795,6 +810,52 @@
 		background: var(--accent);
 		box-shadow: 0 0 8px var(--accent);
 		animation: talk-dot 1.6s ease-in-out infinite;
+	}
+
+	.report-chip {
+		pointer-events: auto;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		margin: -0.15rem 0 0;
+		min-height: 1.8rem;
+		padding: 0.22rem 0.7rem;
+		border: 1px solid rgba(94, 231, 255, 0.4);
+		border-radius: 999px;
+		background: rgba(4, 20, 24, 0.7);
+		backdrop-filter: blur(6px);
+		color: var(--ink);
+		font: inherit;
+		font-size: 0.74rem;
+		letter-spacing: 0.03em;
+		cursor: pointer;
+		transition:
+			border-color 0.15s ease,
+			background 0.15s ease;
+	}
+
+	.report-chip:hover {
+		border-color: var(--cyan);
+		background: rgba(8, 36, 40, 0.85);
+	}
+
+	.report-chip:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
+	}
+
+	.report-chip__count {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 1.1rem;
+		height: 1.1rem;
+		padding: 0 0.3rem;
+		border-radius: 999px;
+		background: var(--accent);
+		color: #04191c;
+		font-size: 0.68rem;
+		font-weight: 700;
 	}
 
 	.dock {

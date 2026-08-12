@@ -1,5 +1,5 @@
 import type { PageServerLoad } from './$types';
-import { getActiveProvider } from '$lib/providers/active.server';
+import { getActiveProvider, getAsyncTasksEnabled } from '$lib/providers/active.server';
 import { grantSessionCookie, resolveBinding } from '$lib/server/auth';
 import { getSetupMode } from '$lib/server/setupMode.server';
 
@@ -15,14 +15,16 @@ export const load: PageServerLoad = async (event) => {
 		grantSessionCookie(event, binding.voiceKey);
 	}
 
-	// All three non-secret: `provider`/`setupMode` are ops-level (not per-user), and
-	// setupMode is already exposed unauthenticated via GET /api/setup/status, so this
+	// All non-secret: `provider`/`setupMode`/`asyncTasksEnabled` are ops-level (not per-user),
+	// and setupMode is already exposed unauthenticated via GET /api/setup/status, so this
 	// adds no new disclosure. Used by the settings pill/gear (chunk A) and the locked
-	// gate's setup-mode-aware guidance.
+	// gate's setup-mode-aware guidance. `asyncTasksEnabled` mirrors that same pattern to
+	// thread the VOICE_ASYNC_TASKS kill switch to the browser (see Part F).
 	return {
 		unlocked: binding !== null,
 		provider: getActiveProvider(),
 		isOwner: binding?.role === 'owner',
-		setupMode: getSetupMode()
+		setupMode: getSetupMode(),
+		asyncTasksEnabled: getAsyncTasksEnabled()
 	};
 };

@@ -1,4 +1,4 @@
-import { VOICE_TOOLS } from '$lib/voice/tools';
+import { resolveVoiceTools } from '$lib/voice/tools';
 import { userTextItem } from '../items';
 import type {
 	InputTranscription,
@@ -64,6 +64,7 @@ export function createRealtimeClient(
 	const model = options.model?.trim() || DEFAULT_MODEL;
 	const voice = options.voice?.trim() || DEFAULT_VOICE;
 	const inputTranscription: InputTranscription | null = options.inputTranscription ?? null;
+	const asyncTasksEnabled = options.asyncTasksEnabled ?? true;
 
 	function sessionUpdatePayload() {
 		return {
@@ -73,7 +74,7 @@ export function createRealtimeClient(
 				model,
 				instructions: cachedInstructions,
 				output_modalities: ['audio'],
-				tools: [...VOICE_TOOLS],
+				tools: [...resolveVoiceTools(asyncTasksEnabled)],
 				audio: {
 					input: {
 						turn_detection: cachedTurnDetection,
@@ -351,9 +352,11 @@ export function createRealtimeClient(
 			void _base64Pcm16;
 			/* WebRTC mic is the MediaStream track — PCM append unused. */
 		},
-		commitAndRespond() {
+		commitAndRespond(response?: Record<string, unknown>) {
 			send({ type: 'input_audio_buffer.commit' });
-			send({ type: 'response.create' });
+			send(
+				response !== undefined ? { type: 'response.create', response } : { type: 'response.create' }
+			);
 		},
 		cancelResponse() {
 			send({ type: 'response.cancel' });
@@ -375,8 +378,10 @@ export function createRealtimeClient(
 			if (!ready) return;
 			send({ type: 'conversation.item.create', item: userTextItem(text) });
 		},
-		respond() {
-			send({ type: 'response.create' });
+		respond(response?: Record<string, unknown>) {
+			send(
+				response !== undefined ? { type: 'response.create', response } : { type: 'response.create' }
+			);
 		},
 		close
 	};

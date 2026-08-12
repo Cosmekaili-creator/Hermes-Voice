@@ -64,10 +64,12 @@ export const XAI_HANDS_FREE_TURN_DETECTION = {
 	silence_duration_ms: 1200
 } as const satisfies Exclude<WireTurnDetection, null>;
 
-/** OpenAI hands-free — semantic end-of-turn + server-side interrupt for barge-in. */
+/** OpenAI hands-free — server_vad with a raised threshold (0.7, vs ~0.5 default) to resist false-trigger barge-in from acoustic echo/handling noise while the assistant is speaking; matches xAI's silence_duration_ms tuning rationale. */
 export const OPENAI_HANDS_FREE_TURN_DETECTION = {
-	type: 'semantic_vad',
-	eagerness: 'auto',
+	type: 'server_vad',
+	threshold: 0.7,
+	prefix_padding_ms: 300,
+	silence_duration_ms: 1200,
 	create_response: true,
 	interrupt_response: true
 } as const satisfies Exclude<WireTurnDetection, null>;
@@ -86,8 +88,9 @@ function clamp(value: number, min: number, max: number): number {
  * const BY IDENTITY (not a copy) — this keeps every existing caller (the default binding,
  * which never sets `handsFreeSilenceMs` away from its 1200ms default) provably untouched.
  *
- * OpenAI's `semantic_vad` has no per-response silence-duration knob (VOICE_PROVIDER is
- * xAI-only for now for this override) — any override is ignored there and the frozen
+ * The `silenceMs` override is xAI-only for now — not wired through to OpenAI's
+ * `silence_duration_ms` (out of scope / not yet implemented, not a capability gap in
+ * `server_vad` itself) — so any override is ignored there and the frozen
  * OPENAI_HANDS_FREE_TURN_DETECTION const is always returned by identity.
  */
 export function handsFreeTurnDetectionFor(
@@ -143,6 +146,9 @@ export type RealtimeClientOptions = {
 	voice?: string;
 	/** Omit/null → no transcription requested, byte-identical session payload to today. */
 	inputTranscription?: InputTranscription | null;
+	/** VOICE_ASYNC_TASKS kill-switch (Part F) — gates which tools this client registers on
+	 * session.update. Omitted → treated as enabled (matches the server-side default-on). */
+	asyncTasksEnabled?: boolean;
 };
 
 /** Optional mic stream for WebRTC connect (shared with Lounge capture). */
@@ -167,12 +173,15 @@ export type RealtimeClient = {
 	setTurnDetection(turnDetection: WireTurnDetection): void;
 	send(obj: Record<string, unknown>): void;
 	appendAudio(base64Pcm16: string): void;
-	commitAndRespond(): void;
 	cancelResponse(): void;
 	clearInputBuffer(): void;
 	sendFunctionCallOutput(callId: string, output: string): void;
 	/** Inject a typed user turn as if spoken. Caller triggers `respond()`. */
 	sendUserText(text: string): void;
-	respond(): void;
+	/** Optional per-response override (e.g. `{ instructions }`) — same wire shape as the
+	 * greeting flow's raw `send({type:'response.create', response:{...}})`. Omitted →
+	 * byte-identical `{type:'response.create'}` to before this parameter existed. */
+	respond(response?: Record<string, unknown>): void;
+	commitAndRespond(response?: Record<string, unknown>): void;
 	close(): void;
 };

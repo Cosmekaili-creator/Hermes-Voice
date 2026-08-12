@@ -346,6 +346,24 @@ export async function syncOwnerToEnv(owner: Binding): Promise<EnvWriteResult> {
 	return written;
 }
 
+/**
+ * Resolve a binding by id, applying the same `enabled` filtering `resolveBinding()`
+ * (auth.ts) applies during authentication — a disabled row must never be resolvable here
+ * either, even by id. Placed here (not physically beside `resolveBinding`, which lives in
+ * auth.ts) per this module's role as the single source of binding-lookup logic; auth.ts
+ * already imports from this file, not the other way around, so putting an auth-shaped
+ * helper in auth.ts would invert that dependency.
+ */
+export async function getBindingById(id: string): Promise<Binding | null> {
+	if (!isMultiUserMode()) {
+		const synthetic = syntheticEnvBinding();
+		return synthetic && id === 'env' ? synthetic : null;
+	}
+	const imported = await ensureBindingsImported();
+	if (!imported.ok) return null;
+	return imported.file.users.find((u) => u.id === id && u.enabled) ?? null;
+}
+
 export function defaultSessionKey(): string {
 	return DEFAULT_SESSION_KEY;
 }
