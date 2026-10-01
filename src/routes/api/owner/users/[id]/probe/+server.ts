@@ -3,7 +3,7 @@ import { requireOwner } from '$lib/server/auth';
 import { ensureBindingsImported, isMultiUserMode } from '$lib/server/bindings.server';
 import { assertSameOrigin } from '$lib/server/origin.server';
 import { enforceRateLimit, RATE } from '$lib/server/rateLimit.server';
-import { probeHermes, validateHermesApiBase } from '$lib/server/setupProbes.server';
+import { probeHermes, sameHermesBase, validateHermesApiBase } from '$lib/server/setupProbes.server';
 
 export const POST: RequestHandler = async (event) => {
 	assertSameOrigin(event);
@@ -42,6 +42,11 @@ export const POST: RequestHandler = async (event) => {
 	const baseCheck = validateHermesApiBase(baseRaw);
 	if (!baseCheck.ok) {
 		return json({ ok: false, code: baseCheck.code }, { status: 400 });
+	}
+
+	// The user's stored key is only ever probed against the user's stored base.
+	if (!overrideKey && !sameHermesBase(baseCheck.base, user.hermesApiBase)) {
+		return json({ ok: false, code: 'hermes_key_required' }, { status: 400 });
 	}
 
 	const result = await probeHermes({

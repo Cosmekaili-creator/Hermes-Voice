@@ -17,7 +17,8 @@ import {
 import { assertSameOrigin } from '$lib/server/origin.server';
 import { enforceRateLimit, RATE } from '$lib/server/rateLimit.server';
 import { requireSetupOrOwner } from '$lib/server/setupMode.server';
-import { validateHermesApiBase } from '$lib/server/setupProbes.server';
+import { readEnvTrimmed } from '$lib/server/runtimeEnv.server';
+import { sameHermesBase, validateHermesApiBase } from '$lib/server/setupProbes.server';
 import { pickPresentFields } from '$lib/server/settingsFields.server';
 
 // Cross-referenced with MANAGED_ENV_KEYS' definition-site comment in envFile.server.ts —
@@ -102,6 +103,17 @@ export const POST: RequestHandler = async (event) => {
 	if ('HERMES_API_BASE' in fields) {
 		const baseCheck = validateHermesApiBase(fields.HERMES_API_BASE!);
 		if (!baseCheck.ok) return json({ ok: false, code: baseCheck.code }, { status: 400 });
+		// A stored Hermes key is only ever sent to the base it was saved with: moving the
+		// base requires supplying the key in the same save (anti-exfiltration, see
+		// sameHermesBase). Multi-user: the owner row is authoritative.
+		let currentBase = readEnvTrimmed('HERMES_API_BASE');
+		if (isMultiUserMode()) {
+			const imported = await ensureBindingsImported();
+			if (imported.ok) currentBase = findOwner(imported.file.users)?.hermesApiBase ?? currentBase;
+		}
+		if (!sameHermesBase(baseCheck.base, currentBase) && !('HERMES_API_KEY' in fields)) {
+			return json({ ok: false, code: 'hermes_key_required' }, { status: 400 });
+		}
 		updates.HERMES_API_BASE = baseCheck.base;
 		hermesBaseChecked = baseCheck.base;
 	}

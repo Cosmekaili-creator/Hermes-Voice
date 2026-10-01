@@ -48,6 +48,25 @@ export function validateHermesApiBase(raw: string | null): HermesBaseCheck {
 	return { ok: true, base: base.replace(/\/$/, '') };
 }
 
+/**
+ * True when two Hermes base URLs address the same endpoint (scheme/host/port/path,
+ * trailing slash ignored). Used to enforce "a stored Hermes API key is only ever sent to
+ * the base it was stored with": changing the base requires re-entering the key, so a
+ * hijacked owner session can't repoint the base at a host it controls and harvest it.
+ */
+export function sameHermesBase(
+	a: string | null | undefined,
+	b: string | null | undefined
+): boolean {
+	if (!a || !b) return false;
+	try {
+		const norm = (v: string) => new URL(v.trim()).href.replace(/\/+$/, '');
+		return norm(a) === norm(b);
+	} catch {
+		return false;
+	}
+}
+
 export type HermesFetchTarget =
 	{ ok: true; base: string; fetchBase: string; hostHeader?: string } | { ok: false; code: string };
 
@@ -116,16 +135,22 @@ export async function probeHermes(opts: {
 	hermesApiBase?: string | null;
 	hermesApiKey?: string | null;
 }): Promise<ProbeResult> {
-	const target = await resolveHermesFetchTarget(
-		opts.hermesApiBase ?? process.env.HERMES_API_BASE ?? env.HERMES_API_BASE ?? null
-	);
+	const storedBase = nonEmpty(process.env.HERMES_API_BASE) ?? nonEmpty(env.HERMES_API_BASE);
+	const requestedBase = nonEmpty(opts.hermesApiBase) ?? storedBase;
+	const target = await resolveHermesFetchTarget(requestedBase);
 	if (!target.ok) {
 		return { ok: false, code: target.code };
 	}
-	const key =
-		nonEmpty(opts.hermesApiKey) ||
-		nonEmpty(process.env.HERMES_API_KEY) ||
-		nonEmpty(env.HERMES_API_KEY);
+	let key = nonEmpty(opts.hermesApiKey);
+	if (!key) {
+		// The stored env key may only be sent to the stored env base — never to a
+		// caller-supplied URL (credential exfiltration via a "Test" button).
+		const storedKey = nonEmpty(process.env.HERMES_API_KEY) ?? nonEmpty(env.HERMES_API_KEY);
+		if (storedKey && !sameHermesBase(requestedBase, storedBase)) {
+			return { ok: false, code: 'hermes_key_required' };
+		}
+		key = storedKey;
+	}
 	if (!key) return { ok: false, code: 'missing_key' };
 
 	const base = target.fetchBase;

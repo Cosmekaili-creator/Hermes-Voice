@@ -131,6 +131,9 @@ export const es = {
 	'wizard.openLounge': 'Abrir Lounge',
 	'wizard.warnings': 'Avisos',
 	'wizard.error.missing_voice_key': 'La clave URL es obligatoria',
+	'wizard.error.hermes_key_required':
+		'Cambiar la URL de Hermes requiere volver a introducir su clave API',
+	'wizard.error.weak_voice_key': 'Al menos 24 caracteres, sin un patrón simple — usa Generar clave',
 	'wizard.error.missing_xai_key': 'La clave API de xAI es obligatoria',
 	'wizard.error.missing_openai_key': 'La clave API de OpenAI es obligatoria',
 	'wizard.error.missing_hermes_key': 'La clave API de Hermes es obligatoria',
@@ -204,6 +207,9 @@ export const es = {
 	'users.error.generic': 'Algo salió mal',
 	'users.error.missing_label': 'La etiqueta es obligatoria',
 	'users.error.missing_voice_key': 'La clave URL es obligatoria',
+	'users.error.hermes_key_required':
+		'Cambiar la URL de Hermes requiere volver a introducir su clave API',
+	'users.error.weak_voice_key': 'Al menos 24 caracteres, sin un patrón simple — usa Generar clave',
 	'users.error.missing_hermes_key': 'La clave API de Hermes es obligatoria',
 	'users.error.voice_key_taken': 'Esa clave URL ya está en uso',
 	'users.error.second_owner': 'Solo se permite un propietario',

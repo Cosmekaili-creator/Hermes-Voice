@@ -11,7 +11,7 @@ import {
 	requireSetupOrOwner,
 	revokeBootstrapInProcess
 } from '$lib/server/setupMode.server';
-import { clearSessionCookie } from '$lib/server/auth';
+import { clearSessionCookie, isStrongVoiceKey } from '$lib/server/auth';
 import {
 	ensureBindingsImported,
 	findOwner,
@@ -22,7 +22,7 @@ import {
 } from '$lib/server/bindings.server';
 import { assertSameOrigin } from '$lib/server/origin.server';
 import { enforceRateLimit, RATE } from '$lib/server/rateLimit.server';
-import { validateHermesApiBase } from '$lib/server/setupProbes.server';
+import { sameHermesBase, validateHermesApiBase } from '$lib/server/setupProbes.server';
 
 function strField(body: unknown, key: string): string | null {
 	if (!body || typeof body !== 'object') return null;
@@ -80,6 +80,11 @@ export const POST: RequestHandler = async (event) => {
 	if (!nextVoice) {
 		return json({ ok: false, code: 'missing_voice_key' }, { status: 400 });
 	}
+	// Strength is enforced on any key being SET (bootstrap, or an explicit rotation) —
+	// an unchanged pre-existing key carried over on rotation keeps working.
+	if ((voiceUrlKey || !rotation) && !isStrongVoiceKey(nextVoice)) {
+		return json({ ok: false, code: 'weak_voice_key' }, { status: 400 });
+	}
 	if (nextProvider === 'openai') {
 		if (!nextOpenAI) {
 			return json({ ok: false, code: 'missing_openai_key' }, { status: 400 });
@@ -94,6 +99,10 @@ export const POST: RequestHandler = async (event) => {
 	const baseCheck = validateHermesApiBase(nextHermesBase);
 	if (!baseCheck.ok) {
 		return json({ ok: false, code: baseCheck.code }, { status: 400 });
+	}
+	// Rotation carrying over the stored Hermes key must not move it to a new base.
+	if (rotation && !hermesApiKey && !sameHermesBase(baseCheck.base, existing('HERMES_API_BASE'))) {
+		return json({ ok: false, code: 'hermes_key_required' }, { status: 400 });
 	}
 
 	// Multi-user: validate owner sync *before* env write so a voiceKey collision

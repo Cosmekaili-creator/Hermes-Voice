@@ -132,6 +132,9 @@ export const fr = {
 	'wizard.openLounge': 'Ouvrir le Lounge',
 	'wizard.warnings': 'Avertissements',
 	'wizard.error.missing_voice_key': 'La clé URL est requise',
+	'wizard.error.hermes_key_required': 'Modifier l’URL Hermes exige de saisir à nouveau sa clé API',
+	'wizard.error.weak_voice_key':
+		'Au moins 24 caractères, sans motif simple — utilisez Générer une clé',
 	'wizard.error.missing_xai_key': 'La clé API xAI est requise',
 	'wizard.error.missing_openai_key': 'La clé API OpenAI est requise',
 	'wizard.error.missing_hermes_key': 'La clé API Hermes est requise',
@@ -206,6 +209,9 @@ export const fr = {
 	'users.error.generic': 'Une erreur s’est produite',
 	'users.error.missing_label': 'Le libellé est requis',
 	'users.error.missing_voice_key': 'La clé URL est requise',
+	'users.error.hermes_key_required': 'Modifier l’URL Hermes exige de saisir à nouveau sa clé API',
+	'users.error.weak_voice_key':
+		'Au moins 24 caractères, sans motif simple — utilisez Générer une clé',
 	'users.error.missing_hermes_key': 'La clé API Hermes est requise',
 	'users.error.voice_key_taken': 'Cette clé URL est déjà utilisée',
 	'users.error.second_owner': 'Un seul propriétaire est autorisé',

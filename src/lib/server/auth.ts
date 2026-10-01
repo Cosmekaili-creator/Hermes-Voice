@@ -7,6 +7,7 @@ import {
 	syntheticEnvBinding,
 	type Binding
 } from '$lib/server/bindings.server';
+import { isAuthLockedOut, recordAuthFailure } from '$lib/server/rateLimit.server';
 
 /** `__Host-` on HTTPS (Secure + Path=/ + no Domain). Plain name on local HTTP. */
 export const VOICE_COOKIE_HOST = '__Host-hv';
@@ -29,6 +30,20 @@ function readLoungeCookie(event: RequestEvent): string | null {
 		nonEmptyString(event.cookies.get(VOICE_COOKIE_HOST)) ??
 		nonEmptyString(event.cookies.get(VOICE_COOKIE_DEV))
 	);
+}
+
+/**
+ * Minimum voice-key length accepted when a key is SET (setup save, owner user admin).
+ * Existing shorter keys keep working — this only gates new/rotated keys. The in-app
+ * "Generate key" buttons produce 48 hex chars.
+ */
+export const MIN_VOICE_KEY_LENGTH = 24;
+
+export function isStrongVoiceKey(key: string): boolean {
+	const k = key.trim();
+	if (k.length < MIN_VOICE_KEY_LENGTH) return false;
+	// Reject trivially low-entropy keys (e.g. one repeated character).
+	return new Set(k).size >= 6;
 }
 
 /** Derived session token — cookie never stores the raw voice key. */
@@ -67,21 +82,44 @@ export function extractVoiceKey(event: RequestEvent, body?: unknown): string | n
  */
 export async function resolveBinding(event: RequestEvent, body?: unknown): Promise<Binding | null> {
 	const raw = extractVoiceKey(event, body);
+	const cookie = raw ? null : readLoungeCookie(event);
+	// Anonymous request — nothing to verify, nothing to count.
+	if (!raw && !cookie) return null;
 
+	// Failed-credential lockout: once this address has burned its budget, every credential
+	// answers "no" WITHOUT being evaluated, so the lockout window yields no oracle.
+	if (isAuthLockedOut(event)) return null;
+
+	const binding = await matchCredential(raw, cookie);
+	// Credential store unavailable (no key configured yet / bindings unreadable): fail
+	// closed, but it isn't the caller's fault — don't count it or drop their cookie.
+	if (binding === 'unavailable') return null;
+	if (!binding) {
+		recordAuthFailure(event, raw ? `k:${raw}` : `c:${cookie}`);
+		// A stale/invalid Lounge cookie (e.g. after key rotation) would otherwise be
+		// re-counted on every request the browser makes — drop it once.
+		if (cookie) clearSessionCookie(event.cookies);
+	}
+	return binding;
+}
+
+async function matchCredential(
+	raw: string | null,
+	cookie: string | null
+): Promise<Binding | null | 'unavailable'> {
 	if (!isMultiUserMode()) {
 		const synthetic = syntheticEnvBinding();
-		if (!synthetic) return null;
+		if (!synthetic) return 'unavailable';
 		if (raw) {
 			return safeEqualStr(synthetic.voiceKey, raw) ? synthetic : null;
 		}
-		const cookie = readLoungeCookie(event);
 		if (!cookie) return null;
 		const expected = derivedSessionToken(synthetic.voiceKey);
 		return safeEqualStr(expected, cookie) ? synthetic : null;
 	}
 
 	const imported = await ensureBindingsImported();
-	if (!imported.ok) return null;
+	if (!imported.ok) return 'unavailable';
 
 	const enabled = imported.file.users.filter((u) => u.enabled);
 
@@ -92,7 +130,6 @@ export async function resolveBinding(event: RequestEvent, body?: unknown): Promi
 		return null;
 	}
 
-	const cookie = readLoungeCookie(event);
 	if (!cookie) return null;
 	for (const u of enabled) {
 		const token = derivedSessionToken(u.voiceKey);

@@ -1,4 +1,5 @@
 import { type RequestEvent } from '@sveltejs/kit';
+import { isIP } from 'node:net';
 
 type Bucket = {
 	count: number;
@@ -7,14 +8,111 @@ type Bucket = {
 
 const buckets = new Map<string, Bucket>();
 
-/** Best-effort client IP behind a single reverse proxy hop. */
+/** Hard ceiling on tracked buckets — the store must never grow without bound. */
+export const MAX_BUCKETS = 10_000;
+
+function isTrustedProxyPeer(ip: string): boolean {
+	const host = ip.replace(/^::ffff:/i, '');
+	if (host === '::1' || host === 'localhost') return true;
+	if (isIP(host) === 4) {
+		const [a, b] = host.split('.').map(Number) as [number, number];
+		if (a === 127 || a === 10) return true;
+		if (a === 172 && b >= 16 && b <= 31) return true;
+		if (a === 192 && b === 168) return true;
+		return false;
+	}
+	if (isIP(host) === 6) {
+		const lower = host.toLowerCase();
+		return lower.startsWith('fc') || lower.startsWith('fd');
+	}
+	return false;
+}
+
+function socketAddress(event: RequestEvent): string | null {
+	try {
+		return event.getClientAddress();
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Client IP for rate limiting — never trusts a client-controlled header.
+ *
+ * - `ADDRESS_HEADER` set: adapter-node already resolved the address from the configured
+ *   header (with `XFF_DEPTH`) — use it verbatim.
+ * - Direct connection from a public peer: the socket address is authoritative; any
+ *   `X-Forwarded-For` / `X-Real-IP` the client sent is ignored.
+ * - Peer is loopback / private (a local reverse proxy): take the RIGHT-most
+ *   `X-Forwarded-For` entry — the one the proxy itself appended (nginx
+ *   `$proxy_add_x_forwarded_for` keeps the client's own spoofable entries on the left).
+ *   Falls back to `X-Real-IP`, then the peer address.
+ */
 export function clientIp(event: RequestEvent): string {
+	const peer = socketAddress(event);
+	if (process.env.ADDRESS_HEADER?.trim() && peer) return peer;
+	if (peer && !isTrustedProxyPeer(peer)) return peer;
+
 	const xf = event.request.headers.get('x-forwarded-for');
 	if (xf) {
-		const first = xf.split(',')[0]?.trim();
-		if (first) return first;
+		const parts = xf
+			.split(',')
+			.map((p) => p.trim())
+			.filter(Boolean);
+		const last = parts[parts.length - 1];
+		if (last) return last;
 	}
-	return event.getClientAddress();
+	const real = event.request.headers.get('x-real-ip')?.trim();
+	if (real) return real;
+	return peer ?? 'unknown';
+}
+
+function expandIpv6(ip: string): string[] | null {
+	const [head, tail, extra] = ip.split('::');
+	if (extra !== undefined) return null;
+	const left = head ? head.split(':') : [];
+	const right = tail !== undefined && tail ? tail.split(':') : [];
+	const missing = 8 - left.length - right.length;
+	if (tail === undefined ? missing !== 0 : missing < 1) return null;
+	return [...left, ...Array<string>(tail === undefined ? 0 : missing).fill('0'), ...right];
+}
+
+/**
+ * Bucket identity for an address. IPv6 collapses to its /64 — a single host routinely
+ * owns a whole /64, so per-address buckets would let one client rotate through 2^64
+ * fresh buckets. IPv4-mapped IPv6 is unwrapped to plain IPv4.
+ */
+export function ipBucketKey(ip: string): string {
+	const host = ip.replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/i, '');
+	if (isIP(host) !== 6) return host;
+	const groups = expandIpv6(host.toLowerCase().split('%')[0]!);
+	if (!groups) return host;
+	return `${groups
+		.slice(0, 4)
+		.map((g) => g.replace(/^0+(?=.)/, ''))
+		.join(':')}::/64`;
+}
+
+function pruneBuckets(now: number): void {
+	if (buckets.size < MAX_BUCKETS) return;
+	for (const [k, b] of buckets) {
+		if (b.resetAt <= now) buckets.delete(k);
+	}
+	// Still full of live buckets: evict oldest-inserted (Map preserves insertion order).
+	const excess = buckets.size - MAX_BUCKETS + 1;
+	if (excess > 0) {
+		let removed = 0;
+		for (const k of buckets.keys()) {
+			if (removed >= excess) break;
+			buckets.delete(k);
+			removed += 1;
+		}
+	}
+}
+
+/** Test/diagnostic helper — current number of tracked buckets. */
+export function bucketCount(): number {
+	return buckets.size;
 }
 
 /**
@@ -27,14 +125,10 @@ export function takeRateLimit(
 	windowMs: number
 ): { ok: true } | { ok: false; retryAfterSec: number } {
 	const now = Date.now();
-	if (buckets.size > 10_000) {
-		for (const [k, b] of buckets) {
-			if (b.resetAt <= now) buckets.delete(k);
-		}
-	}
-
 	const cur = buckets.get(key);
 	if (!cur || cur.resetAt <= now) {
+		if (cur) buckets.delete(key);
+		pruneBuckets(now);
 		buckets.set(key, { count: 1, resetAt: now + windowMs });
 		return { ok: true };
 	}
@@ -45,6 +139,43 @@ export function takeRateLimit(
 	return { ok: true };
 }
 
+/** True when `key`'s current window is already at/over `limit` — does not consume. */
+export function isRateLimited(key: string, limit: number): boolean {
+	const cur = buckets.get(key);
+	if (!cur || cur.resetAt <= Date.now()) return false;
+	return cur.count >= limit;
+}
+
+/**
+ * Failed-credential budget per client address, shared by every credential check (voice
+ * key / Lounge cookie / setup token). Checked BEFORE a credential is evaluated, so once
+ * exhausted every guess from that address answers "no" without being tested — no oracle.
+ */
+export const FAILED_AUTH = { limit: 20, windowMs: 15 * 60_000 } as const;
+
+function failedAuthKey(event: RequestEvent): string {
+	return `authfail:ip:${ipBucketKey(clientIp(event))}`;
+}
+
+export function isAuthLockedOut(event: RequestEvent): boolean {
+	return isRateLimited(failedAuthKey(event), FAILED_AUTH.limit);
+}
+
+/** Per-request dedupe: hooks + route both resolve the same credential on one request. */
+const countedFailures = new WeakMap<Request, Set<string>>();
+
+/** Count one failed credential attempt — at most once per (request, credential). */
+export function recordAuthFailure(event: RequestEvent, credential: string): void {
+	let seen = countedFailures.get(event.request);
+	if (!seen) {
+		seen = new Set();
+		countedFailures.set(event.request, seen);
+	}
+	if (seen.has(credential)) return;
+	seen.add(credential);
+	takeRateLimit(failedAuthKey(event), FAILED_AUTH.limit, FAILED_AUTH.windowMs);
+}
+
 /** Throws a Response so Retry-After is preserved (Kit error() drops custom headers). */
 export function enforceRateLimit(
 	event: RequestEvent,
@@ -53,7 +184,7 @@ export function enforceRateLimit(
 	windowMs: number,
 	principalId?: string
 ): void {
-	const ip = clientIp(event);
+	const ip = ipBucketKey(clientIp(event));
 	const key = principalId ? `${bucket}:p:${principalId}:${ip}` : `${bucket}:ip:${ip}`;
 	const result = takeRateLimit(key, limit, windowMs);
 	if (!result.ok) {
@@ -93,5 +224,8 @@ export const RATE = {
 	setupRestart: { limit: 3, windowMs: 5 * 60_000 },
 	// Shared by all four async-task routes (dispatch/ack/clear/stream) — a single bucket
 	// across them is intentional, they're all cheap per-call and part of one feature.
-	tasks: { limit: 30, windowMs: 60_000 }
+	tasks: { limit: 30, windowMs: 60_000 },
+	// Owner-only caption debug sink (CAPTION_DEBUG=1) — the client flushes every ~400ms
+	// while captions animate, so this is sized for that, not for a human.
+	debugCaptions: { limit: 120, windowMs: 60_000 }
 } as const;

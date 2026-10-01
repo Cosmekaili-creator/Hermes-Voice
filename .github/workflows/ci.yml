@@ -27,6 +27,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Covers devDependencies too: SvelteKit, devalue and cookie are devDeps here but are
+      # bundled into build/ and run in production, so `--omit=dev` would hide them.
+      - name: Dependency audit
+        run: npm audit --audit-level=moderate
+
       - name: Type / Svelte check
         run: npm run check
 

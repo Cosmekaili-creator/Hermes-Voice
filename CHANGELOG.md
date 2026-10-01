@@ -5,6 +5,19 @@ All notable changes to Hermes Voice are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- **Rate limits can no longer be bypassed with a spoofed `X-Forwarded-For`**: the client address now comes from the socket for public peers, and from the right-most (proxy-appended) `X-Forwarded-For` entry only when the peer is a local reverse proxy. `ADDRESS_HEADER`/`XFF_DEPTH` are honored for multi-proxy setups. IPv6 clients are bucketed per /64.
+- **Failed-credential lockout**: wrong voice keys, invalid session cookies and wrong setup tokens are counted per address (20 per 15 minutes). Once exhausted, every credential from that address is refused without being evaluated, closing the unthrottled brute-force paths (`/?k=`, `/setup?token=`, every authenticated API route). Stale Lounge cookies are cleared once instead of being re-counted.
+- **Voice key strength**: new or rotated voice keys must be at least 24 characters and not a trivial pattern (`weak_voice_key`). Existing keys keep working.
+- **Stored Hermes API keys are bound to their base URL**: changing a Hermes base (settings modal, `/setup` rotation, `/owner/users`, user probe, setup "Test Hermes") requires re-entering the key in the same request (`hermes_key_required`), so a hijacked owner session can't repoint the base at a host it controls and harvest the key.
+- **Caption debug sink is now opt-in and owner-only**: `POST /api/debug/captions` returns 404 unless `CAPTION_DEBUG=1`, is rate-limited, keeps only allow-listed timing fields (no transcript text), writes mode `600`, and is capped at 5 MB.
+- **Rate-limit store is hard-capped** at 10,000 buckets (oldest evicted) so it can't be grown until memory runs out.
+- **Memory review hardened against memory poisoning**: transcript turns are JSON-quoted so a turn can't forge another speaker's line, and the review prompt now only stores facts the user personally stated, treats assistant lines as unverified, and never stores directives.
+- **Dependencies**: SvelteKit 2.70.3 (Accept-header ReDoS), devalue 5.9.4, cookie 0.7.2 (override), vitest 4.1.11 and transitive fixes — `npm audit` is clean. CI now runs `npm audit --audit-level=moderate` including devDependencies, since SvelteKit/devalue/cookie are bundled into the production build.
+
 ## [0.8.0] — 2026-08-12
 
 ### Added
