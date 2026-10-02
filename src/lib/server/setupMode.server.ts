@@ -1,9 +1,16 @@
 import { env } from '$env/dynamic/private';
 import { error, type Cookies, type RequestEvent } from '@sveltejs/kit';
 import { createHmac } from 'node:crypto';
-import { isAuthenticated, requireOwner, requireVoiceKey, resolveBinding } from '$lib/server/auth';
+import {
+	isAuthenticated,
+	isCrossSiteSubresource,
+	requireOwner,
+	requireVoiceKey,
+	resolveBinding
+} from '$lib/server/auth';
 import { isMultiUserMode } from '$lib/server/bindings.server';
 import { safeEqualStr } from '$lib/server/cryptoEqual.server';
+import { isAuthLockedOut, recordAuthFailure } from '$lib/server/rateLimit.server';
 
 /** Setup-only cookie — never grants Lounge session (`hv` / `__Host-hv`). */
 export const SETUP_COOKIE_HOST = '__Host-hv_setup';
@@ -78,6 +85,9 @@ export function extractSetupToken(event: RequestEvent, body?: unknown): string |
 		if (bearer) return bearer;
 	}
 
+	// Same rule as the voice key's `?k=`: a token arriving via another site's subresource
+	// is ignored, so a third-party page can't burn the operator's failed-token budget.
+	if (isCrossSiteSubresource(event)) return null;
 	return nonEmptyString(event.url.searchParams.get('token'));
 }
 
@@ -89,6 +99,23 @@ export function isValidSetupToken(provided: string | null): boolean {
 	return safeEqualStr(expected, provided);
 }
 
+/**
+ * Request-aware SETUP_TOKEN check — shares the failed-credential lockout with the voice
+ * key (see FAILED_AUTH in rateLimit.server.ts). Every entry point that accepts a raw
+ * setup token (page `?token=`, unlock route, any setup mutator's body/header) must go
+ * through this, never `isValidSetupToken` directly, or it becomes an unthrottled oracle.
+ */
+export function checkSetupToken(event: RequestEvent, provided: string | null): boolean {
+	if (!provided) return false;
+	if (!effectiveSetupToken()) return false;
+	if (isAuthLockedOut(event, 'key')) return false;
+	if (isValidSetupToken(provided)) return true;
+	// Same id as resolveBinding uses for a raw key, so a wrong Bearer seen by both the
+	// Lounge and setup checks on one request counts once.
+	recordAuthFailure(event, provided, 'key');
+	return false;
+}
+
 export function isValidSetupCookie(event: RequestEvent): boolean {
 	const expected = derivedSetupSessionToken();
 	if (!expected) return false;
@@ -98,13 +125,17 @@ export function isValidSetupCookie(event: RequestEvent): boolean {
 		event.cookies.get(SETUP_COOKIE_HOST) ??
 		event.cookies.get(SETUP_COOKIE_DEV);
 	if (!got) return false;
-	return safeEqualStr(expected, got);
+	if (isAuthLockedOut(event, 'cookie')) return false;
+	if (safeEqualStr(expected, got)) return true;
+	recordAuthFailure(event, `setup:${got}`, 'cookie');
+	clearSetupCookie(event.cookies);
+	return false;
 }
 
 /** Bootstrap unlock: raw SETUP_TOKEN or setup cookie. Never unlocks Lounge. */
 export function isSetupUnlocked(event: RequestEvent, body?: unknown): boolean {
 	if (getSetupMode() !== 'bootstrap') return false;
-	if (isValidSetupToken(extractSetupToken(event, body))) return true;
+	if (checkSetupToken(event, extractSetupToken(event, body))) return true;
 	return isValidSetupCookie(event);
 }
 

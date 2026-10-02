@@ -52,6 +52,10 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+# Writable state dir (/var/lib/hermes-voice, exported as $STATE_DIRECTORY) for the
+# session-cookie secret, so restarts don't sign every browser out under ProtectSystem=strict.
+StateDirectory=hermes-voice
+StateDirectoryMode=0700
 # Required for the WebUI setup wizard to write .env and for multi-user bindings
 # under data/ (atomic temp→rename). Prefer the runtime directory so both paths work.
 # ReadWritePaths=/opt/hermes-voice

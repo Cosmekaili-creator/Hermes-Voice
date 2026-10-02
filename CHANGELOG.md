@@ -5,6 +5,40 @@ All notable changes to Hermes Voice are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **The orb is the controller**: tap to talk, hold for push-to-talk, swipe down to stop; the pill button is gone. Each state has its own motion (idle breathing, inward ripples while listening, an orbiting comet while working, spectrum bars while speaking, dim red on errors), and the spectrum is now mirrored and log-spaced so the ring is symmetric instead of lopsided.
+- **Conversation timeline**: a bottom sheet (swipe up or the list button) with the full conversation — both sides, every Hermes tool step, task outcomes, approvals and result cards — searchable, exportable as text, persisted per device and clearable. User speech appears when "Show my speech in the conversation" is on (uses the provider's input transcription).
+- **Task orbit**: background tasks orbit the ring as satellites (queued / running / ready / failed); tap one for its live progress feed, result cards, **Cancel** (new `POST /api/tasks/cancel`, binding-scoped, retires the task silently) or **Read it to me**.
+- **Result cards and action approvals**: Hermes may attach an `hv-cards` block (events, emails, links, contacts, notes) that is shown on screen and never read aloud — validated server-side (`$lib/cards`), links restricted to http(s). Anything with a real-world effect (send, book, buy, delete, calendar changes…) now needs the user's go-ahead on an approval card or out loud (`resolve_approval` tool) before it is dispatched; triggered by the model's `requires_approval` flag _or_ a client-side side-effect backstop. Toggle: "Confirm actions before Hermes acts" (on by default).
+- **Control center + ambient mode**: the top-bar cluster moved into a pull-down control center (talk mode, language, provider, display, toggles, owner links). Ambient mode is a full-screen desk/car display with a large clock, next calendar event and unread count (new cached `POST /api/glance`, read-only prompt), ready tasks, and a large orb.
+
+- **Approval hardening (from independent review)**: a spoken approval (`resolve_approval`) is only honoured after a genuine user turn that came after the request, carries the `approval_id`, and can never be issued by the model in the same breath or in a result-delivery turn, and an approving answer must be the user's own clear yes (typed or transcribed — otherwise the card must be tapped); the side-effect backstop covers request lead-ins ("could you…", "I need you to…", "let … know") and French/Spanish verbs; the legacy `ask_hermes` path is gated too.
+- Overlays (timeline, control center, ambient) make the background inert, close on Escape from anywhere, and return focus to the button that opened them.
+- The timeline is stored per binding (hashed scope) and wiped when the Lounge shows the locked gate; "Show my speech in the conversation" is now opt-in.
+
+### Fixed
+
+- A task cancelled between the runner's read and its `running` transition could still run; the transition is now atomic and cancel always aborts.
+- Ambient glance uses a fresh Hermes session per run and caches failures for 2 minutes; every `hv-cards` block (including a truncated one) is stripped from spoken text.
+- The systemd unit sets `StateDirectory=hermes-voice` so the session secret survives restarts under `ProtectSystem=strict`; a too-short `SESSION_SECRET` now logs a warning.
+- `?k=` / `?token=` address-bar cleanup no longer calls `replaceState` before SvelteKit's router has started (the throw could abort the rest of the page mount).
+
+### Security
+
+- **Rate limits can no longer be bypassed with a spoofed `X-Forwarded-For`**: the client address now comes from the socket for public peers, and from the right-most (proxy-appended) `X-Forwarded-For` entry only when the peer is a local reverse proxy. `ADDRESS_HEADER`/`XFF_DEPTH` are honored for multi-proxy setups. IPv6 clients are bucketed per /64.
+- **Failed-credential lockout**: wrong voice keys, invalid session cookies and wrong setup tokens are counted per address (20 per 15 minutes). Once exhausted, every credential from that address is refused without being evaluated, closing the unthrottled brute-force paths (`/?k=`, `/setup?token=`, every authenticated API route). Stale Lounge cookies are cleared once instead of being re-counted.
+- **Voice key strength**: new or rotated voice keys must be at least 24 characters and not a trivial pattern (`weak_voice_key`). Existing keys keep working.
+- **Stored Hermes API keys are bound to their base URL**: changing a Hermes base (settings modal, `/setup` rotation, `/owner/users`, user probe, setup "Test Hermes") requires re-entering the key in the same request (`hermes_key_required`), so a hijacked owner session can't repoint the base at a host it controls and harvest the key.
+- **Caption debug sink is now opt-in and owner-only**: `POST /api/debug/captions` returns 404 unless `CAPTION_DEBUG=1`, is rate-limited, keeps only allow-listed timing fields (no transcript text), writes mode `600`, and is capped at 5 MB.
+- **Rate-limit store is hard-capped** at 10,000 buckets (oldest evicted) so it can't be grown until memory runs out.
+- **Memory review hardened against memory poisoning**: transcript turns are JSON-quoted so a turn can't forge another speaker's line, and the review prompt now only stores facts the user personally stated, treats assistant lines as unverified, and never stores directives.
+- **Follow-up hardening from independent verification**: raw-key and session-cookie failures now have separate budgets, so a lockout of raw keys (e.g. forced by a third-party page) never signs out an already-signed-in browser; cross-site subresource `?k=` (an `<img>` on another site) is ignored outright; only loopback peers (plus `TRUSTED_PROXY_IPS`) may supply `X-Forwarded-For` and `X-Real-IP` is never trusted; an IPv6 /48 tier and eviction protection for lockout buckets; rate limits now answer `429` with `Retry-After` instead of a `500`; an unset `HERMES_API_BASE` is treated as the default base (and the `/setup` rotation wizard is prefilled with the current base and keeps the existing session key); a setup token sent as a Bearer header isn't counted as a failed voice key; the voice-key strength check rejects repeated units and low-entropy keys, and `/owner/health` warns about legacy weak keys; memory-review turns neutralize `<`/`>` and are only truncated at turn boundaries.
+- **Session cookies are keyed with a server secret** (`SESSION_SECRET`, or an auto-generated `data/session.secret`), so a cookie is no longer computable from a voice-key guess; the cookie path therefore needs no lockout and nobody sharing an IP can sign others out. Existing sessions are signed out once on upgrade (re-open the `?k=` link). Cross-site and same-site subresource `?k=` / `?token=` are ignored; random 24-char hex keys are no longer occasionally rejected as weak.
+- **Dependencies**: SvelteKit 2.70.3 (Accept-header ReDoS), devalue 5.9.4, cookie 0.7.2 (override), vitest 4.1.11 and transitive fixes — `npm audit` is clean. CI now runs `npm audit --audit-level=moderate` including devDependencies, since SvelteKit/devalue/cookie are bundled into the production build.
+
 ## [0.8.0] — 2026-08-12
 
 ### Added

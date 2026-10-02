@@ -55,6 +55,7 @@ export const POST: RequestHandler = async (event) => {
 				count += 1;
 				const updated: TaskRecord = { ...t, status: 'reported', reportedAt: now, updatedAt: now };
 				delete updated.result;
+				delete updated.cards;
 				events.push({ type: 'task.reported', id: t.id });
 				return updated;
 			});
@@ -85,6 +86,7 @@ export const POST: RequestHandler = async (event) => {
 						updatedAt: now
 					};
 					delete updated.result;
+					delete updated.cards;
 					events.push({ type: 'task.reported', id: t.id });
 					return updated;
 				}

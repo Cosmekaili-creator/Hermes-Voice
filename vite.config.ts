@@ -48,6 +48,8 @@ export default defineConfig({
 				test: {
 					name: 'server',
 					environment: 'node',
+					// Fixed cookie-signing secret so tests never write data/session.secret.
+					env: { SESSION_SECRET: 'test-session-secret-0123456789abcdef0123456789' },
 					include: ['src/**/*.{test,spec}.{js,ts}'],
 					exclude: ['src/**/*.svelte.{test,spec}.{js,ts}']
 				}

@@ -1,18 +1,25 @@
 <script lang="ts">
+	import { browser } from '$app/environment';
 	import { onMount, untrack } from 'svelte';
-	import { fly } from 'svelte/transition';
+	import { fade, fly } from 'svelte/transition';
 	import { getLocale, t, type MessageKey } from '$lib/i18n';
 	import { DEFAULT_PERSONA, type VoicePersona } from '$lib/persona/types';
 	import type { ProviderId } from '$lib/providers/types';
 	import { createVoiceDemo } from '$lib/voice/voiceDemo';
 	import { markMicPrimed, shouldPrimeMic } from '$lib/voice/micPrimer';
-	import { drawLazicLounge, type VizQuality } from '$lib/viz/lazicLounge';
+	import { drawLazicLounge, type VizMood, type VizQuality } from '$lib/viz/lazicLounge';
+	import { readApprovalsEnabled, writeApprovalsEnabled } from '$lib/voice/approvals';
+	import { createTimeline, type TimelineEntry } from '$lib/voice/timeline.svelte';
 	import { createScreenWakeLock } from '$lib/wakeLock';
 	import SettingsModal from './settings/SettingsModal.svelte';
-	import LocaleSwitch from './LocaleSwitch.svelte';
+	import AmbientMode from './AmbientMode.svelte';
+	import ApprovalCard from './ApprovalCard.svelte';
+	import ControlCenter from './ControlCenter.svelte';
 	import MicPrimer from './MicPrimer.svelte';
-	import TalkModeSwitch from './TalkModeSwitch.svelte';
+	import ResultCards from './ResultCards.svelte';
+	import TaskOrbit from './TaskOrbit.svelte';
 	import TextComposer from './TextComposer.svelte';
+	import TimelineSheet from './TimelineSheet.svelte';
 
 	const PROVIDER_LABELS: Record<ProviderId, string> = {
 		xai: 'xAI',
@@ -23,12 +30,14 @@
 		persona = DEFAULT_PERSONA,
 		provider,
 		isOwner = false,
-		asyncTasksEnabled = true
+		asyncTasksEnabled = true,
+		timelineScope = null
 	}: {
 		persona?: VoicePersona;
 		provider?: ProviderId;
 		isOwner?: boolean;
 		asyncTasksEnabled?: boolean;
+		timelineScope?: string | null;
 	} = $props();
 
 	let settingsOpen = $state(false);
@@ -53,10 +62,186 @@
 	// Auth is cookie-only: SSR grants HttpOnly session from valid ?k=; SPA never retains the key.
 	// persona is tied to the authenticated binding for the life of this component (a change
 	// implies a different session entirely) — read once intentionally, not reactively.
+	const SPEECH_TIMELINE_KEY = 'hermes-voice.speechInTimeline';
+	function readSpeechInTimeline(): boolean {
+		// Opt-in: turning it on enables the provider's input transcription.
+		if (!browser) return false;
+		try {
+			return localStorage.getItem(SPEECH_TIMELINE_KEY) === '1';
+		} catch {
+			return false;
+		}
+	}
+
+	let confirmActions = $state(browser ? readApprovalsEnabled() : true);
+	let speechInTimeline = $state(readSpeechInTimeline());
+	let timelineOpen = $state(false);
+	let controlOpen = $state(false);
+	let ambientOpen = $state(false);
+
+	const timeline = createTimeline({ persist: browser, scope: untrack(() => timelineScope) });
+
 	const demo = createVoiceDemo({
 		persona: untrack(() => persona),
-		asyncTasksEnabled: untrack(() => asyncTasksEnabled)
+		asyncTasksEnabled: untrack(() => asyncTasksEnabled),
+		timeline,
+		speechInTimeline: () => speechInTimeline,
+		approvalsEnabled: () => confirmActions
 	});
+
+	function setConfirmActions(on: boolean) {
+		confirmActions = on;
+		writeApprovalsEnabled(on);
+	}
+
+	function setSpeechInTimeline(on: boolean) {
+		speechInTimeline = on;
+		try {
+			localStorage.setItem(SPEECH_TIMELINE_KEY, on ? '1' : '0');
+		} catch {
+			/* ignore */
+		}
+	}
+
+	const vizMood = $derived.by((): VizMood => {
+		if (demo.statusKey?.startsWith('error.')) return 'error';
+		if (demo.isHermesWorking || demo.state === 'thinking') return 'thinking';
+		return demo.state;
+	});
+
+	const orbHint = $derived.by(() => {
+		if (demo.state === 'speaking' || demo.state === 'listening' || demo.isHermesWorking) {
+			return pt('orb.hintStop');
+		}
+		return demo.talkMode === 'handsfree' ? pt('orb.hintHandsfree') : pt('orb.hintPtt');
+	});
+
+	// --- Latest result cards: shown briefly above the dock, then live on in the timeline.
+	let cardsTick = $state(Date.now());
+	let dismissedCardsId = $state<string | null>(null);
+	const CARDS_VISIBLE_MS = 2 * 60_000;
+	const latestCards = $derived.by(() => {
+		const entries = timeline.entries;
+		for (let i = entries.length - 1; i >= Math.max(0, entries.length - 10); i--) {
+			const e = entries[i]!;
+			if (e.kind !== 'cards') continue;
+			if (e.id === dismissedCardsId || cardsTick - e.at > CARDS_VISIBLE_MS) return null;
+			return e as Extract<TimelineEntry, { kind: 'cards' }>;
+		}
+		return null;
+	});
+
+	// --- Orb gestures: tap = toggle · hold (push-to-talk) = talk while held · swipe down = stop.
+	const HOLD_MS = 320;
+	const SWIPE_PX = 60;
+	let pressStartY: number | null = null;
+	let holdTimer: ReturnType<typeof setTimeout> | null = null;
+	let holdActive = false;
+	let suppressClick = false;
+
+	function clearHold() {
+		if (holdTimer !== null) {
+			clearTimeout(holdTimer);
+			holdTimer = null;
+		}
+	}
+
+	function onOrbDown(e: PointerEvent) {
+		if (e.button !== 0) return;
+		pressStartY = e.clientY;
+		holdActive = false;
+		clearHold();
+		if (demo.talkMode === 'ptt' && demo.state === 'idle' && !demo.isHermesWorking && !demo.busy) {
+			holdTimer = setTimeout(() => {
+				holdTimer = null;
+				holdActive = true;
+				dismissPrimer();
+				demo.toggle();
+			}, HOLD_MS);
+		}
+		try {
+			(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+		} catch {
+			/* ignore */
+		}
+	}
+
+	function onOrbUp(e: PointerEvent) {
+		clearHold();
+		if (pressStartY === null) return;
+		const dy = e.clientY - pressStartY;
+		pressStartY = null;
+		suppressClick = true;
+		setTimeout(() => (suppressClick = false), 400);
+		if (holdActive) {
+			holdActive = false;
+			if (demo.state === 'listening') demo.toggle();
+			return;
+		}
+		if (dy > SWIPE_PX) {
+			if (demo.state === 'speaking' || demo.state === 'listening' || demo.isHermesWorking) {
+				demo.toggle();
+			}
+			return;
+		}
+		dismissPrimer();
+		demo.toggle();
+	}
+
+	function onOrbCancel() {
+		clearHold();
+		pressStartY = null;
+		if (holdActive && demo.state === 'listening') demo.toggle();
+		holdActive = false;
+	}
+
+	/** Keyboard (Enter/Space) and assistive-tech activation — pointer taps are handled above. */
+	function onOrbClick() {
+		if (suppressClick) {
+			suppressClick = false;
+			return;
+		}
+		dismissPrimer();
+		demo.toggle();
+	}
+
+	// --- Edge swipes: up from the bottom edge → timeline; down from the top edge → controls.
+	const EDGE_PX = 28;
+	let edgeStart: { y: number; edge: 'top' | 'bottom' } | null = null;
+
+	function onStageDown(e: PointerEvent) {
+		const h = window.innerHeight;
+		if (e.clientY > h - EDGE_PX) edgeStart = { y: e.clientY, edge: 'bottom' };
+		else if (e.clientY < EDGE_PX) edgeStart = { y: e.clientY, edge: 'top' };
+		else edgeStart = null;
+	}
+
+	function onStageUp(e: PointerEvent) {
+		if (!edgeStart) return;
+		const dy = e.clientY - edgeStart.y;
+		if (edgeStart.edge === 'bottom' && dy < -SWIPE_PX) timelineOpen = true;
+		if (edgeStart.edge === 'top' && dy > SWIPE_PX) controlOpen = true;
+		edgeStart = null;
+	}
+
+	let orbRadius = $state(150);
+
+	// --- Overlays: background goes inert (no Tab escape, no stray clicks) and focus returns
+	// to whatever opened the overlay once it closes.
+	const overlayOpen = $derived(timelineOpen || controlOpen || ambientOpen);
+	let focusBeforeOverlay: HTMLElement | null = null;
+	$effect(() => {
+		if (overlayOpen) {
+			if (!focusBeforeOverlay && document.activeElement instanceof HTMLElement) {
+				focusBeforeOverlay = document.activeElement;
+			}
+			return;
+		}
+		const target = focusBeforeOverlay;
+		focusBeforeOverlay = null;
+		if (target && target.isConnected) queueMicrotask(() => target.focus());
+	});
+	let orbitSelectedId = $state<string | null>(null);
 	const wakeLock = createScreenWakeLock();
 	/** Must match AnalyserNode.frequencyBinCount for fftSize 512 (not fftSize itself). */
 	const freqBuf = new Uint8Array(256);
@@ -139,6 +324,18 @@
 	function loungeRadius() {
 		return Math.min(180, window.innerWidth * 0.28);
 	}
+
+	onMount(() => {
+		const sync = () => (orbRadius = loungeRadius());
+		sync();
+		window.addEventListener('resize', sync);
+		const tick = setInterval(() => (cardsTick = Date.now()), 15_000);
+		return () => {
+			window.removeEventListener('resize', sync);
+			clearInterval(tick);
+			clearHold();
+		};
+	});
 
 	/** Cap backing-store size — full DPR on a fullscreen canvas tanks mobile GPUs. */
 	function pixelRatio(quality: VizQuality) {
@@ -252,7 +449,8 @@
 				radius: loungeRadius(),
 				energy,
 				nowMs: now,
-				quality
+				quality,
+				mood: vizMood
 			});
 			raf = requestAnimationFrame(frame);
 		};
@@ -265,133 +463,226 @@
 	});
 </script>
 
-<div class="lounge-stage" data-state={demo.state} data-hermes={demo.isHermesWorking ? '1' : '0'}>
-	<div class="glow-field" aria-hidden="true"></div>
-	<canvas class="viz" bind:this={canvasEl} aria-hidden="true"></canvas>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+	class="lounge-stage"
+	data-state={demo.state}
+	data-hermes={demo.isHermesWorking ? '1' : '0'}
+	onpointerdown={onStageDown}
+	onpointerup={onStageUp}
+>
+	<div class="stage-bg" inert={overlayOpen}>
+		<div class="glow-field" aria-hidden="true"></div>
+		<canvas class="viz" bind:this={canvasEl} aria-hidden="true"></canvas>
 
-	<div class="mode-corner">
-		<TalkModeSwitch mode={demo.talkMode} onChange={(m) => demo.setTalkMode(m)} />
-	</div>
-	<div class="locale-corner">
-		<!-- Rendered unconditionally, not gated on demo.provider — today the pill only
-		     appeared after a successful mint, i.e. it disappeared exactly when a broken
-		     key made settings most necessary. `provider` (SSR value from +page.server.ts)
-		     seeds the label; `demo.provider` overrides once a session actually mints. -->
-		{#if isOwner}
-			<button type="button" class="provider-badge" onclick={() => openSettings('provider')}>
-				<span class="provider-badge__label">{pt('meta.provider')}: </span>{PROVIDER_LABELS[
-					demo.provider ?? provider ?? 'xai'
-				]}
-			</button>
-			<button
-				type="button"
-				class="settings-gear"
-				aria-label={pt('settings.open')}
-				onclick={() => openSettings('hermes')}
-			>
-				<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
-					<path
-						fill="currentColor"
-						d="M19.14 12.94a7.14 7.14 0 0 0 .06-.94 7.14 7.14 0 0 0-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.3 7.3 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.84a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.5a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.42.32.66.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.04.24.25.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.24.1.52.02.66-.22l1.92-3.32a.5.5 0 0 0-.12-.64Zm-7.14 2.44a3.38 3.38 0 1 1 0-6.76 3.38 3.38 0 0 1 0 6.76Z"
-					/>
-				</svg>
-			</button>
-		{:else if demo.provider ?? provider}
-			<p class="provider-badge provider-badge--inert">
-				<span class="provider-badge__label">{pt('meta.provider')}: </span>{PROVIDER_LABELS[
-					demo.provider ?? provider ?? 'xai'
-				]}
-			</p>
-		{/if}
-		<LocaleSwitch />
-	</div>
-
-	{#if demo.captionLines.length > 0 || demo.captionUserEcho || demo.captionPhase !== 'hidden'}
-		<div
-			class="captions"
-			class:captions--fade={demo.captionPhase === 'fading'}
-			aria-live="off"
-			aria-label={pt('status.captions')}
-			bind:this={captionsEl}
-			onscroll={onCaptionScroll}
+		<button
+			type="button"
+			class="control-handle"
+			aria-label={pt('control.open')}
+			aria-expanded={controlOpen}
+			onclick={() => (controlOpen = true)}
 		>
-			{#if demo.captionUserEcho}
-				<p class="captions__line captions__line--user">{demo.captionUserEcho}</p>
-			{/if}
-			{#each demo.captionLines as line (line.id)}
-				<p
-					class="captions__line"
-					class:captions__line--soft={line.soft}
-					in:fly={{ y: 6, duration: 220 }}
-					out:fly={{ y: -10, duration: 280 }}
-				>
-					{line.text}
-				</p>
-			{/each}
-		</div>
-	{/if}
+			<span class="control-handle__bar" aria-hidden="true"></span>
+			<span class="control-handle__meta">
+				{demo.talkMode === 'handsfree' ? pt('mode.handsfree') : pt('mode.ptt')} · {getLocale().toUpperCase()}
+				· {PROVIDER_LABELS[demo.provider ?? provider ?? 'xai']}
+			</span>
+		</button>
 
-	<div class="center">
-		<p class="brand">{persona.assistantName.toUpperCase()}</p>
-		<p class="status" aria-live="polite">{demo.statusLabel}</p>
-		{#if demo.voiceFallbackNotice}
-			<!-- B12 connect-time voice fallback: a rejected per-binding voice degraded
-			     gracefully to the provider default instead of killing the session — this
-			     is the non-fatal notice surfacing that. -->
-			<p class="status-notice" aria-live="polite">{pt(demo.voiceFallbackNotice as MessageKey)}</p>
-		{/if}
-		{#if demo.statusKey === 'error.micDenied'}
-			<button type="button" class="retry" onclick={() => demo.retryMic()}
-				>{pt('button.retryMic')}</button
+		{#if demo.captionLines.length > 0 || demo.captionUserEcho || demo.captionPhase !== 'hidden'}
+			<div
+				class="captions"
+				class:captions--fade={demo.captionPhase === 'fading'}
+				aria-live="off"
+				aria-label={pt('status.captions')}
+				bind:this={captionsEl}
+				onscroll={onCaptionScroll}
 			>
-		{/if}
-		{#if demo.talkMode === 'handsfree' && demo.state === 'speaking'}
-			<p class="mic-chip" class:mic-chip--live={demo.micLive} aria-live="off">
-				<span class="mic-chip__dot" aria-hidden="true"></span>
-				{demo.micLive ? pt('status.micLive') : pt('status.micMuted')}
-			</p>
-		{/if}
-		{#if demo.hermesWaitActivity}
-			<p class="status-activity" aria-live="off">{demo.hermesWaitActivity}</p>
-		{/if}
-		{#if demo.waitElapsedSec !== null}
-			<p class="status-timer" aria-live="off">{demo.waitElapsedSec}s</p>
-		{/if}
-		{#if demo.pendingReportCount > 0}
-			<button type="button" class="report-chip" onclick={() => demo.speakPendingReports()}>
-				<span class="report-chip__count">{demo.pendingReportCount}</span>
-				{pt('status.resultsReady')}
-			</button>
-		{/if}
-	</div>
-
-	<div class="dock">
-		{#if showMicPrimer}
-			<MicPrimer onDismiss={dismissPrimer} assistantName={persona.assistantName} />
+				{#if demo.captionUserEcho}
+					<p class="captions__line captions__line--user">{demo.captionUserEcho}</p>
+				{/if}
+				{#each demo.captionLines as line (line.id)}
+					<p
+						class="captions__line"
+						class:captions__line--soft={line.soft}
+						in:fly={{ y: 6, duration: 220 }}
+						out:fly={{ y: -10, duration: 280 }}
+					>
+						{line.text}
+					</p>
+				{/each}
+			</div>
 		{/if}
 
 		<button
 			type="button"
-			class="talk"
+			class="orb talk"
 			class:talk--cancel={demo.isHermesWorking}
+			style:--orb-size="{orbRadius * 2}px"
 			aria-pressed={pressed}
 			aria-label={buttonLabel}
+			aria-describedby="orb-hint"
 			disabled={demo.buttonDisabled}
-			onclick={() => {
-				dismissPrimer();
-				demo.toggle();
-			}}
+			onpointerdown={onOrbDown}
+			onpointerup={onOrbUp}
+			onpointercancel={onOrbCancel}
+			onclick={onOrbClick}
 		>
-			<span class="talk__dot" aria-hidden="true"></span>
-			<span>{buttonLabel}</span>
+			<span class="brand">{persona.assistantName.toUpperCase()}</span>
+			<span class="status" aria-live="polite">{demo.statusLabel}</span>
 		</button>
 
-		<TextComposer
-			enabled={demo.canSendText}
-			onSend={(text) => demo.sendText(text)}
-			assistantName={persona.assistantName}
+		<TaskOrbit
+			bind:selectedId={orbitSelectedId}
+			tasks={demo.orbitTasks}
+			radius={orbRadius}
+			onCancel={(id) => void demo.cancelTask(id)}
+			onSpeak={() => demo.speakPendingReports()}
 		/>
+
+		<div class="under-orb" style:--orb-size="{orbRadius * 2}px">
+			{#if demo.voiceFallbackNotice}
+				<!-- B12 connect-time voice fallback: a rejected per-binding voice degraded
+			     gracefully to the provider default instead of killing the session — this
+			     is the non-fatal notice surfacing that. -->
+				<p class="status-notice" aria-live="polite">{pt(demo.voiceFallbackNotice as MessageKey)}</p>
+			{/if}
+			{#if demo.statusKey === 'error.micDenied'}
+				<button type="button" class="retry" onclick={() => demo.retryMic()}
+					>{pt('button.retryMic')}</button
+				>
+			{/if}
+			{#if demo.talkMode === 'handsfree' && demo.state === 'speaking'}
+				<p class="mic-chip" class:mic-chip--live={demo.micLive} aria-live="off">
+					<span class="mic-chip__dot" aria-hidden="true"></span>
+					{demo.micLive ? pt('status.micLive') : pt('status.micMuted')}
+				</p>
+			{/if}
+			{#if demo.hermesWaitActivity}
+				<p class="status-activity" aria-live="off">{demo.hermesWaitActivity}</p>
+			{/if}
+			{#if demo.waitElapsedSec !== null}
+				<p class="status-timer" aria-live="off">{demo.waitElapsedSec}s</p>
+			{/if}
+			{#if demo.pendingReportCount > 0 && !latestCards}
+				<button type="button" class="report-chip" onclick={() => demo.speakPendingReports()}>
+					<span class="report-chip__count">{demo.pendingReportCount}</span>
+					{pt('status.resultsReady')}
+				</button>
+			{/if}
+		</div>
+
+		<div class="dock">
+			{#if showMicPrimer}
+				<MicPrimer onDismiss={dismissPrimer} assistantName={persona.assistantName} />
+			{/if}
+
+			{#if demo.pendingApproval}
+				<!-- shown in .approval-layer, outside the inert background -->
+			{:else if latestCards && !orbitSelectedId}
+				<div class="cards-tray" transition:fade={{ duration: 180 }}>
+					<ResultCards cards={latestCards.cards} compact row />
+					<button
+						type="button"
+						class="cards-tray__dismiss"
+						aria-label={pt('task.close')}
+						onclick={() => (dismissedCardsId = latestCards!.id)}
+					>
+						<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"
+							><path
+								d="M6 6l12 12M18 6L6 18"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+							/></svg
+						>
+					</button>
+				</div>
+			{/if}
+
+			<p class="orb-hint" id="orb-hint">{orbHint}</p>
+
+			<div class="dock__row">
+				<TextComposer
+					enabled={demo.canSendText}
+					onSend={(text) => demo.sendText(text)}
+					assistantName={persona.assistantName}
+				/>
+				<button
+					type="button"
+					class="dock__timeline"
+					aria-label={pt('timeline.open')}
+					aria-expanded={timelineOpen}
+					onclick={() => (timelineOpen = true)}
+				>
+					<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"
+						><path
+							d="M4 6h16M4 12h16M4 18h10"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+						/></svg
+					>
+					{#if timeline.entries.length > 0}<span class="dock__dot" aria-hidden="true"></span>{/if}
+				</button>
+			</div>
+			<span class="home-bar" aria-hidden="true"></span>
+		</div>
 	</div>
+
+	{#if demo.pendingApproval}
+		<div class="approval-layer">
+			<ApprovalCard
+				approval={demo.pendingApproval}
+				assistantName={persona.assistantName}
+				voiceApproval={speechInTimeline || persona.reviewConversationForMemory}
+				onApprove={() => void demo.approve(demo.pendingApproval!.id)}
+				onDecline={() => demo.decline(demo.pendingApproval!.id)}
+			/>
+		</div>
+	{/if}
+
+	<TimelineSheet
+		open={timelineOpen}
+		entries={timeline.entries}
+		assistantName={persona.assistantName}
+		onClose={() => (timelineOpen = false)}
+		onClear={() => timeline.clear()}
+	/>
+
+	<ControlCenter
+		open={controlOpen}
+		talkMode={demo.talkMode}
+		provider={demo.provider ?? provider ?? 'xai'}
+		{isOwner}
+		{confirmActions}
+		{speechInTimeline}
+		onClose={() => (controlOpen = false)}
+		onTalkMode={(m) => demo.setTalkMode(m)}
+		onOpenSettings={(section) => {
+			controlOpen = false;
+			openSettings(section);
+		}}
+		onAmbient={() => {
+			controlOpen = false;
+			ambientOpen = true;
+		}}
+		onConfirmActions={setConfirmActions}
+		onSpeechInTimeline={setSpeechInTimeline}
+	/>
+
+	{#if ambientOpen}
+		<AmbientMode
+			assistantName={persona.assistantName}
+			voiceState={demo.state}
+			statusLabel={demo.statusLabel}
+			readyCount={demo.pendingReportCount}
+			onToggleTalk={() => demo.toggle()}
+			onSpeakReady={() => demo.speakPendingReports()}
+			onExit={() => (ambientOpen = false)}
+		/>
+	{/if}
 
 	{#if isOwner}
 		<SettingsModal
@@ -491,111 +782,43 @@
 		pointer-events: none;
 	}
 
-	.mode-corner,
-	.locale-corner {
+	.control-handle {
 		position: absolute;
-		z-index: 4;
-		top: max(0.85rem, env(safe-area-inset-top));
+		z-index: 5;
+		top: max(0.6rem, env(safe-area-inset-top));
+		left: 50%;
+		translate: -50% 0;
 		display: flex;
-		flex-wrap: wrap;
+		flex-direction: column;
 		align-items: center;
-		gap: 0.4rem;
-		max-width: min(16rem, calc(50vw - 1rem));
-	}
-
-	.mode-corner {
-		left: max(0.85rem, env(safe-area-inset-left));
-		justify-content: flex-start;
-	}
-
-	.locale-corner {
-		right: max(0.85rem, env(safe-area-inset-right));
-		justify-content: flex-end;
-	}
-
-	.provider-badge {
-		display: inline-flex;
-		align-items: center;
-		margin: 0;
-		min-height: 1.8rem;
-		padding: 0.2rem 0.6rem;
-		border: 1px solid rgba(202, 253, 255, 0.22);
-		border-radius: 999px;
-		background: rgba(4, 20, 24, 0.55);
-		backdrop-filter: blur(6px);
+		gap: 0.35rem;
+		min-height: 2.75rem;
+		padding: 0.2rem 1rem;
+		border: none;
+		background: transparent;
 		color: var(--muted);
 		font: inherit;
-		font-size: 0.66rem;
-		font-weight: 500;
+		font-size: 0.74rem;
 		letter-spacing: 0.08em;
-		opacity: 0.75;
-	}
-
-	/* Interactive (owner-only) variant — a <button>, not the inert <p> the non-owner
-	   fallback still renders (see .provider-badge--inert below). */
-	button.provider-badge {
 		cursor: pointer;
-		transition:
-			border-color 0.15s ease,
-			opacity 0.15s ease;
 	}
 
-	button.provider-badge:hover {
-		opacity: 1;
-		border-color: rgba(202, 253, 255, 0.4);
+	.control-handle__bar {
+		width: 2.75rem;
+		height: 5px;
+		border-radius: 3px;
+		background: rgba(202, 253, 255, 0.28);
+		transition: background 0.15s ease;
 	}
 
-	button.provider-badge:focus-visible {
+	.control-handle:hover .control-handle__bar {
+		background: rgba(202, 253, 255, 0.5);
+	}
+
+	.control-handle:focus-visible {
 		outline: 2px solid var(--accent);
 		outline-offset: 2px;
-	}
-
-	.provider-badge--inert {
-		cursor: default;
-	}
-
-	.settings-gear {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 1.8rem;
-		height: 1.8rem;
-		padding: 0;
-		border: 1px solid rgba(202, 253, 255, 0.22);
-		border-radius: 999px;
-		background: rgba(4, 20, 24, 0.55);
-		backdrop-filter: blur(6px);
-		color: var(--muted);
-		cursor: pointer;
-		opacity: 0.75;
-		transition:
-			border-color 0.15s ease,
-			opacity 0.15s ease;
-	}
-
-	.settings-gear:hover {
-		opacity: 1;
-		border-color: rgba(202, 253, 255, 0.4);
-	}
-
-	.settings-gear:focus-visible {
-		outline: 2px solid var(--accent);
-		outline-offset: 2px;
-	}
-
-	/* Announced by every screen reader, works on touch, needs no ARIA.
-	   `title` never renders on touch, and <p> (role=paragraph) is
-	   name-prohibited in ARIA 1.2, so aria-label exposure is browser-dependent. */
-	.provider-badge__label {
-		position: absolute;
-		width: 1px;
-		height: 1px;
-		margin: -1px;
-		padding: 0;
-		border: 0;
-		overflow: hidden;
-		clip-path: inset(50%);
-		white-space: nowrap;
+		border-radius: 0.75rem;
 	}
 
 	/* Above the Lazic ring — stable left-growing lines (center alignment shifts glyphs). */
@@ -688,12 +911,51 @@
 		}
 	}
 
-	.center {
+	.orb {
 		position: absolute;
 		z-index: 3;
 		left: 50%;
-		top: 46%;
+		top: 50%;
 		translate: -50% -50%;
+		width: var(--orb-size, 300px);
+		height: var(--orb-size, 300px);
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 0.65rem;
+		padding: 0;
+		border: none;
+		border-radius: 50%;
+		background: transparent;
+		color: var(--ink);
+		font: inherit;
+		text-align: center;
+		cursor: pointer;
+		touch-action: none;
+		-webkit-tap-highlight-color: transparent;
+		user-select: none;
+	}
+
+	.orb:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 6px;
+	}
+
+	.orb:disabled {
+		cursor: wait;
+	}
+
+	.orb.talk--cancel .status {
+		color: #ffd4d4;
+	}
+
+	.under-orb {
+		position: absolute;
+		z-index: 3;
+		left: 50%;
+		top: calc(50% + var(--orb-size, 300px) / 2 + 1rem);
+		translate: -50% 0;
 		display: flex;
 		flex-direction: column;
 		align-items: center;
@@ -860,95 +1122,95 @@
 
 	.dock {
 		position: absolute;
-		z-index: 3;
+		z-index: 4;
 		left: 0;
 		right: 0;
-		bottom: max(1rem, env(safe-area-inset-bottom));
+		bottom: max(0.5rem, env(safe-area-inset-bottom));
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		gap: 1.75rem;
-		padding: 0 1.5rem;
+		gap: 0.75rem;
+		padding: 0 1rem;
 	}
 
-	.talk {
+	.dock__row {
+		width: min(32rem, 100%);
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+	}
+
+	.dock__row :global(.composer) {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.dock__timeline {
+		position: relative;
+		flex: none;
+		width: 3rem;
+		height: 3rem;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		gap: 0.65rem;
-		min-height: 3.25rem;
-		padding: 0.85rem 1.75rem;
-		border: 1px solid rgba(202, 253, 255, 0.45);
+		border: 1px solid rgba(142, 184, 188, 0.35);
 		border-radius: 999px;
-		background: rgba(4, 20, 24, 0.7);
-		color: var(--ink);
-		font: inherit;
-		font-size: 0.95rem;
-		letter-spacing: 0.03em;
+		background: rgba(3, 10, 12, 0.55);
+		color: var(--cyan);
 		cursor: pointer;
-		backdrop-filter: blur(8px);
-		box-shadow:
-			0 0 24px rgba(94, 231, 255, 0.18),
-			inset 0 0 20px rgba(202, 253, 255, 0.04);
-		transition:
-			border-color 0.2s ease,
-			background 0.2s ease,
-			transform 0.2s ease,
-			box-shadow 0.2s ease;
 	}
 
-	.talk:hover:not(:disabled) {
-		border-color: var(--cyan);
-		background: rgba(8, 36, 40, 0.88);
-		transform: translateY(-1px);
-	}
-
-	.talk:focus-visible {
+	.dock__timeline:focus-visible,
+	.cards-tray__dismiss:focus-visible {
 		outline: 2px solid var(--accent);
-		outline-offset: 3px;
+		outline-offset: 2px;
 	}
 
-	.talk:disabled {
-		opacity: 0.55;
-		cursor: wait;
-	}
-
-	.talk--cancel {
-		border-color: rgba(255, 120, 120, 0.65);
-		color: #ffd4d4;
-		box-shadow:
-			0 0 24px rgba(255, 100, 100, 0.22),
-			inset 0 0 20px rgba(255, 140, 140, 0.06);
-		cursor: pointer;
-		opacity: 1;
-	}
-
-	.talk--cancel:hover:not(:disabled) {
-		border-color: #ff8a8a;
-		background: rgba(40, 12, 14, 0.88);
-		transform: translateY(-1px);
-	}
-
-	.talk--cancel .talk__dot {
-		background: #ff8a8a;
-		box-shadow: 0 0 12px rgba(255, 120, 120, 0.85);
-		animation: talk-dot 0.7s ease-in-out infinite;
-	}
-
-	.talk__dot {
-		width: 0.55rem;
-		height: 0.55rem;
+	.dock__dot {
+		position: absolute;
+		top: 0.55rem;
+		right: 0.6rem;
+		width: 7px;
+		height: 7px;
 		border-radius: 50%;
-		background: var(--cyan);
-		box-shadow: 0 0 12px var(--cyan);
+		background: var(--accent);
 	}
 
-	.lounge-stage[data-state='listening'] .talk__dot {
-		animation: talk-dot 0.9s ease-in-out infinite;
+	.orb-hint {
+		margin: 0;
+		color: var(--muted);
+		font-size: 0.74rem;
+		letter-spacing: 0.04em;
+		text-align: center;
+		opacity: 0.85;
 	}
 
-	.lounge-stage[data-state='speaking'] .talk__dot {
-		animation: talk-dot 0.45s ease-in-out infinite;
+	.home-bar {
+		width: 7.5rem;
+		height: 5px;
+		border-radius: 3px;
+		background: rgba(202, 253, 255, 0.18);
+	}
+
+	.cards-tray {
+		position: relative;
+		width: min(32rem, 100%);
+	}
+
+	.cards-tray__dismiss {
+		position: absolute;
+		top: -0.9rem;
+		right: -0.3rem;
+		width: 2rem;
+		height: 2rem;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		border: 1px solid rgba(142, 184, 188, 0.35);
+		border-radius: 999px;
+		background: #0a1b1e;
+		color: var(--muted);
+		cursor: pointer;
 	}
 
 	@keyframes talk-dot {
@@ -961,5 +1223,21 @@
 			transform: scale(1.45);
 			opacity: 0.55;
 		}
+	}
+
+	/* Wrapper only exists to make the background inert while an overlay is open. */
+	.stage-bg {
+		display: contents;
+	}
+
+	/* Above every overlay (and outside the inert background) so an approval can always be
+	   answered, even with the timeline or ambient mode open. */
+	.approval-layer {
+		position: fixed;
+		z-index: 31;
+		left: 50%;
+		bottom: calc(7.5rem + env(safe-area-inset-bottom));
+		translate: -50% 0;
+		width: min(26rem, calc(100vw - 2rem));
 	}
 </style>

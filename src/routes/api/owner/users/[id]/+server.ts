@@ -1,6 +1,6 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
 import { mergePersonaPatch } from '$lib/persona/types';
-import { clearSessionCookie, requireOwner } from '$lib/server/auth';
+import { clearSessionCookie, isStrongVoiceKey, requireOwner } from '$lib/server/auth';
 import {
 	ensureBindingsImported,
 	findOwner,
@@ -14,7 +14,7 @@ import {
 } from '$lib/server/bindings.server';
 import { assertSameOrigin } from '$lib/server/origin.server';
 import { enforceRateLimit, RATE } from '$lib/server/rateLimit.server';
-import { validateHermesApiBase } from '$lib/server/setupProbes.server';
+import { sameHermesBase, validateHermesApiBase } from '$lib/server/setupProbes.server';
 
 function strField(body: unknown, key: string): string | null {
 	if (!body || typeof body !== 'object') return null;
@@ -120,6 +120,14 @@ export const PATCH: RequestHandler = async (event) => {
 			return json({ ok: false, code: baseCheck.code }, { status: 400 });
 		}
 		nextBase = baseCheck.base;
+		// Stored key never follows a base change silently (anti-exfiltration).
+		if (!hermesApiKey && !sameHermesBase(nextBase, current.hermesApiBase)) {
+			return json({ ok: false, code: 'hermes_key_required' }, { status: 400 });
+		}
+	}
+
+	if (voiceKey && voiceKey !== current.voiceKey && !isStrongVoiceKey(voiceKey)) {
+		return json({ ok: false, code: 'weak_voice_key' }, { status: 400 });
 	}
 
 	if (voiceKey && voiceKeyTaken(users, voiceKey, current.id)) {

@@ -12,6 +12,8 @@ declare global {
 				label: string;
 				persona: import('$lib/persona/types').VoicePersona;
 			} | null;
+			/** Set by enforceRateLimit(); hooks.server.ts turns it into a Retry-After header. */
+			retryAfterSec?: number;
 		}
 		// interface PageData {}
 		// interface PageState {}

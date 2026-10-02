@@ -1,5 +1,8 @@
 export type VizQuality = 'high' | 'medium' | 'low';
 
+/** Visual state of the orb — each gets its own motion language. */
+export type VizMood = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error';
+
 export type LazicLoungeOpts = {
 	barWidth: number;
 	barHeight: number;
@@ -14,7 +17,30 @@ export type LazicLoungeOpts = {
 	nowMs?: number;
 	/** Render budget — mobile defaults to low/medium. */
 	quality?: VizQuality;
+	/** listening: inward ripples · thinking: orbiting comet · speaking: bars · error: dim red. */
+	mood?: VizMood;
 };
+
+/**
+ * Bar index → FFT bin. Mirrored left/right and log-spaced from the bottom of the ring
+ * (bass, where voice energy lives) to the top (presence/sibilance). A linear sweep put all
+ * the energy on one arc, leaving the opposite side flat — the ring looked lopsided.
+ */
+export function ringBinFor(i: number, barNum: number, bins: number): number {
+	const half = barNum / 2;
+	const m = i <= half ? i / half : (barNum - i) / half; // 0 at the bottom, 1 at the top
+	const lo = 2;
+	const hi = Math.max(lo + 1, Math.min(bins - 1, Math.floor(bins * 0.6)));
+	return Math.min(bins - 1, Math.round(lo * Math.pow(hi / lo, m)));
+}
+
+function meanLevel(data: Uint8Array): number {
+	const n = Math.min(data.length, 96);
+	if (n === 0) return 0;
+	let sum = 0;
+	for (let i = 1; i < n; i++) sum += data[i] ?? 0;
+	return sum / ((n - 1) * 255);
+}
 
 type Particle = {
 	angle: number;
@@ -111,8 +137,10 @@ export function drawLazicLounge(
 		radius,
 		energy = 0.4,
 		nowMs = performance.now(),
-		quality = 'high'
+		quality = 'high',
+		mood = 'idle'
 	} = opts;
+	const isError = mood === 'error';
 
 	const e = Math.min(1, Math.max(0, energy));
 	const low = quality === 'low';
@@ -122,8 +150,14 @@ export function drawLazicLounge(
 	// --- Soft core glow (behind the ring) ---
 	const glowR = radius * (1.55 + e * 0.55);
 	const core = ctx.createRadialGradient(cx, cy, radius * 0.15, cx, cy, glowR);
-	core.addColorStop(0, `rgba(202, 253, 255, ${0.14 + e * 0.22})`);
-	core.addColorStop(0.35, `rgba(94, 231, 255, ${0.08 + e * 0.12})`);
+	core.addColorStop(
+		0,
+		isError ? `rgba(255, 170, 160, ${0.1 + e * 0.12})` : `rgba(202, 253, 255, ${0.14 + e * 0.22})`
+	);
+	core.addColorStop(
+		0.35,
+		isError ? `rgba(240, 110, 100, ${0.06 + e * 0.08})` : `rgba(94, 231, 255, ${0.08 + e * 0.12})`
+	);
 	core.addColorStop(0.7, `rgba(13, 58, 64, ${0.18 + e * 0.1})`);
 	core.addColorStop(1, 'rgba(3, 10, 12, 0)');
 	ctx.fillStyle = core;
@@ -132,7 +166,9 @@ export function drawLazicLounge(
 	// Pulsing halo ring — shadow only on high quality
 	ctx.beginPath();
 	ctx.arc(cx, cy, radius * (0.92 + e * 0.06), 0, Math.PI * 2);
-	ctx.strokeStyle = `rgba(202, 253, 255, ${0.12 + e * 0.28})`;
+	ctx.strokeStyle = isError
+		? `rgba(255, 150, 140, ${0.2 + e * 0.2})`
+		: `rgba(202, 253, 255, ${0.12 + e * 0.28})`;
 	ctx.lineWidth = 2 + e * 4;
 	if (!low) {
 		ctx.shadowBlur = mid ? 10 + e * 14 : 18 + e * 36;
@@ -192,6 +228,38 @@ export function drawLazicLounge(
 		ctx.globalAlpha = 1;
 	}
 
+	// --- Mood overlays ---
+	if (mood === 'listening') {
+		// Inward ripples pulled toward the core by the user's voice level.
+		const level = meanLevel(frequencyData);
+		const rings = low ? 2 : 3;
+		for (let k = 0; k < rings; k++) {
+			const phase = (((nowMs * 0.00045 + k / rings) % 1) + 1) % 1;
+			const rr = radius * (0.98 - phase * 0.55);
+			ctx.beginPath();
+			ctx.arc(cx, cy, rr, 0, Math.PI * 2);
+			ctx.strokeStyle = `rgba(94, 231, 255, ${(1 - phase) * (0.12 + level * 0.65)})`;
+			ctx.lineWidth = 1.5 + level * 3;
+			ctx.stroke();
+		}
+	} else if (mood === 'thinking') {
+		// A comet orbiting the ring: Hermes is working.
+		const head = nowMs * 0.0032;
+		const segs = low ? 10 : 18;
+		const span = 1.1;
+		for (let k = 0; k < segs; k++) {
+			const a0 = head - (k / segs) * span;
+			const a1 = head - ((k + 1) / segs) * span;
+			ctx.beginPath();
+			ctx.arc(cx, cy, radius * 1.04, a1, a0);
+			ctx.strokeStyle = `rgba(202, 253, 255, ${(1 - k / segs) * 0.75})`;
+			ctx.lineWidth = 3.5 * (1 - k / segs) + 0.5;
+			ctx.lineCap = 'round';
+			ctx.stroke();
+		}
+		ctx.lineCap = 'butt';
+	}
+
 	// --- Lounge bars: outward-only, smooth wave around the full ring ---
 	const spacing = low ? barSpacing + 3 : mid ? barSpacing + 1 : barSpacing;
 	const barNum = Math.floor((radius * 2 * Math.PI) / (barWidth + spacing));
@@ -211,12 +279,9 @@ export function drawLazicLounge(
 	const b = ringScratchB!;
 
 	if (live && bins > 2) {
-		// Sample voice band evenly around the full ring (skip DC)
-		const usable = Math.max(2, Math.floor(bins * 0.55));
+		// Mirrored, log-spaced sampling — symmetric ring (see ringBinFor).
 		for (let i = 0; i < barNum; i++) {
-			const t = i / barNum;
-			const bin = 1 + Math.min(usable - 1, Math.floor(t * usable));
-			const raw = (frequencyData[bin] ?? 0) / 255;
+			const raw = (frequencyData[ringBinFor(i, barNum, bins)] ?? 0) / 255;
 			a[i] = Math.pow(raw, 0.6);
 		}
 
@@ -252,9 +317,9 @@ export function drawLazicLounge(
 		}
 	}
 
-	ctx.fillStyle = barColor;
+	ctx.fillStyle = isError ? '#ffb4aa' : barColor;
 	ctx.shadowBlur = low ? 0 : mid ? Math.min(12, shadowBlur * 0.35) : shadowBlur + e * 28;
-	ctx.shadowColor = shadowColor;
+	ctx.shadowColor = isError ? 'rgba(240, 110, 100, 0.8)' : shadowColor;
 
 	const maxExt = radius * 0.55;
 	const drive = 1.15 + e * 0.85;

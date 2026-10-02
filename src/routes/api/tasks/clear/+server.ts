@@ -39,6 +39,7 @@ export const POST: RequestHandler = async (event) => {
 				clearedIds.push(t.id);
 				const updated: TaskRecord = { ...t, status: 'reported', reportedAt: now, updatedAt: now };
 				delete updated.result;
+				delete updated.cards;
 				return updated;
 			}
 			return t;

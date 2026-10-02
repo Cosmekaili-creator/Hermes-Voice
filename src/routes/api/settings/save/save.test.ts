@@ -151,7 +151,7 @@ describe('POST /api/settings/save', () => {
 				body: {
 					k: OWNER_VOICE_KEY,
 					section: 'hermes',
-					fields: { HERMES_API_BASE: 'http://127.0.0.1:9999' }
+					fields: { HERMES_SESSION_KEY: 'agent:main:voice:renamed' }
 				}
 			})
 		);
@@ -168,11 +168,56 @@ describe('POST /api/settings/save', () => {
 		for (let i = 0; i < beforeLines.length; i++) {
 			if (beforeLines[i] !== afterLines[i]) {
 				changedLines += 1;
-				expect(beforeLines[i]).toBe('HERMES_API_BASE=http://127.0.0.1:8642');
-				expect(afterLines[i]).toBe('HERMES_API_BASE=http://127.0.0.1:9999');
+				expect(beforeLines[i]).toBe('HERMES_SESSION_KEY=agent:main:voice:testowner');
+				expect(afterLines[i]).toBe('HERMES_SESSION_KEY=agent:main:voice:renamed');
 			}
 		}
 		expect(changedLines).toBe(1);
+	});
+
+	it('moving HERMES_API_BASE without re-entering HERMES_API_KEY is refused and writes nothing', async () => {
+		const before = await readFile(envFilePath);
+		const res = await POST(
+			makeEvent({
+				body: {
+					k: OWNER_VOICE_KEY,
+					section: 'hermes',
+					fields: { HERMES_API_BASE: 'http://192.168.1.50:8642' }
+				}
+			})
+		);
+		expect(res.status).toBe(400);
+		expect(await res.json()).toEqual({ ok: false, code: 'hermes_key_required' });
+		expect(Buffer.compare(before, await readFile(envFilePath))).toBe(0);
+	});
+
+	it('moving HERMES_API_BASE together with a new HERMES_API_KEY is accepted', async () => {
+		const res = await POST(
+			makeEvent({
+				body: {
+					k: OWNER_VOICE_KEY,
+					section: 'hermes',
+					fields: { HERMES_API_BASE: 'http://127.0.0.1:9999', HERMES_API_KEY: 'new-hermes-key' }
+				}
+			})
+		);
+		expect(res.status).toBe(200);
+		const text = await readFile(envFilePath, 'utf8');
+		expect(text).toContain('HERMES_API_BASE=http://127.0.0.1:9999');
+		expect(text).toContain('HERMES_API_KEY=new-hermes-key');
+	});
+
+	it('re-saving the SAME base (trailing slash only) without a key is allowed', async () => {
+		const res = await POST(
+			makeEvent({
+				body: {
+					k: OWNER_VOICE_KEY,
+					section: 'hermes',
+					fields: { HERMES_API_BASE: 'http://127.0.0.1:8642/' }
+				}
+			})
+		);
+		expect(res.status).toBe(200);
 	});
 });
 
@@ -269,7 +314,7 @@ describe('POST /api/settings/save — multi-user owner-binding sync', () => {
 				body: {
 					k: OWNER_VOICE_KEY,
 					section: 'hermes',
-					fields: { HERMES_API_BASE: 'http://127.0.0.1:9999' }
+					fields: { HERMES_API_BASE: 'http://127.0.0.1:9999', HERMES_API_KEY: 'rotated-key' }
 				}
 			})
 		);
@@ -281,5 +326,20 @@ describe('POST /api/settings/save — multi-user owner-binding sync', () => {
 		const owner = afterBindings.users.find((u) => u.id === ownerId);
 		expect(owner?.hermesApiBase).toBe('http://127.0.0.1:9999');
 		expect(owner?.updatedAt).not.toBe(initialOwnerUpdatedAt);
+	});
+
+	it('multi-user: moving the owner base without a key is refused against the OWNER ROW base', async () => {
+		const beforeBindings = await readFile(bindingsFile, 'utf8');
+		const res = await POST(
+			makeEvent({
+				body: {
+					k: OWNER_VOICE_KEY,
+					section: 'hermes',
+					fields: { HERMES_API_BASE: 'http://10.0.0.9:8642' }
+				}
+			})
+		);
+		expect(res.status).toBe(400);
+		expect(await readFile(bindingsFile, 'utf8')).toBe(beforeBindings);
 	});
 });

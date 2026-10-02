@@ -7,6 +7,8 @@
  * leaked, would let one binding's tasks be replayed against another binding's credentials.
  */
 
+import type { ResultCard } from '$lib/cards';
+
 export type TaskStatus = 'queued' | 'running' | 'done' | 'failed' | 'reporting' | 'reported';
 export type TaskOutcome = 'done' | 'failed' | null;
 export type TaskFailureCode =
@@ -26,6 +28,7 @@ export type TaskRecord = {
 	status: TaskStatus;
 	outcome: TaskOutcome; // set once terminal; PRESERVED through reporting/reported
 	result?: string; // present only between terminal and confirm — dropped on ack
+	cards?: ResultCard[]; // display-only result cards (see $lib/cards) — dropped with result
 	failureCode?: TaskFailureCode;
 	runAttempts: number; // crash-resume counter, cap MAX_RUN_ATTEMPTS
 	attempts: number; // SPOKEN-report attempts, cap MAX_REPORT_ATTEMPTS
@@ -48,6 +51,7 @@ export type PublicTask = Pick<
 	| 'status'
 	| 'outcome'
 	| 'result'
+	| 'cards'
 	| 'failureCode'
 	| 'createdAt'
 	| 'updatedAt'
@@ -73,6 +77,7 @@ export function toPublicTask(t: TaskRecord): PublicTask {
 		status: t.status,
 		outcome: t.outcome,
 		result: t.result,
+		...(t.cards && t.cards.length > 0 ? { cards: t.cards } : {}),
 		failureCode: t.failureCode,
 		createdAt: t.createdAt,
 		updatedAt: t.updatedAt,

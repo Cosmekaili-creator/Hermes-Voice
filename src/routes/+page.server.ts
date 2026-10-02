@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { PageServerLoad } from './$types';
 import { getActiveProvider, getAsyncTasksEnabled } from '$lib/providers/active.server';
 import { grantSessionCookie, resolveBinding } from '$lib/server/auth';
@@ -25,6 +26,11 @@ export const load: PageServerLoad = async (event) => {
 		provider: getActiveProvider(),
 		isOwner: binding?.role === 'owner',
 		setupMode: getSetupMode(),
-		asyncTasksEnabled: getAsyncTasksEnabled()
+		asyncTasksEnabled: getAsyncTasksEnabled(),
+		// Opaque per-binding id for client-side storage scoping (timeline) — a hash, so the
+		// binding id itself never reaches the browser.
+		timelineScope: binding
+			? createHash('sha256').update(`timeline:${binding.id}`).digest('hex').slice(0, 16)
+			: null
 	};
 };

@@ -4,6 +4,7 @@
  * binding can never starve another) and its detached-IIFE dispatch pattern.
  */
 import { isHttpError } from '@sveltejs/kit';
+import { extractCards, type ResultCard } from '$lib/cards';
 import { getBindingById } from '$lib/server/bindings.server';
 import { streamHermesChat } from '$lib/server/hermes';
 import { publish } from './bus.server';
@@ -75,31 +76,44 @@ export function classifyRunFailure(err: unknown): TaskFailureCode {
 	return 'unavailable';
 }
 
-async function markRunning(bindingId: string, taskId: string): Promise<void> {
-	await mutateTasks(bindingId, (file) => {
+/** queued → running, atomically. False if the task is no longer queued (e.g. the user
+ * cancelled it between the runner's read and this write) — the caller must then NOT run it. */
+async function markRunning(bindingId: string, taskId: string): Promise<boolean> {
+	const res = await mutateTasks<boolean>(bindingId, (file) => {
 		const now = new Date().toISOString();
 		const events: TaskBusEvent[] = [];
+		let transitioned = false;
 		const tasks = file.tasks.map((t) => {
-			if (t.id !== taskId) return t;
+			if (t.id !== taskId || t.status !== 'queued') return t;
+			transitioned = true;
 			const updated: TaskRecord = { ...t, status: 'running', startedAt: now, updatedAt: now };
 			events.push({ type: 'task.running', task: toPublicTask(updated) });
 			return updated;
 		});
-		return { file: { version: 1, tasks }, result: undefined, events };
+		return { file: { version: 1, tasks }, result: transitioned, events };
 	});
+	return res.ok && res.result;
 }
 
-async function markDone(bindingId: string, taskId: string, result: string): Promise<void> {
+async function markDone(
+	bindingId: string,
+	taskId: string,
+	result: string,
+	cards: ResultCard[] = []
+): Promise<void> {
 	await mutateTasks(bindingId, (file) => {
 		const now = new Date().toISOString();
 		const events: TaskBusEvent[] = [];
 		const tasks = file.tasks.map((t) => {
-			if (t.id !== taskId) return t;
+			// 'reported' here means the user cancelled it (see /api/tasks/cancel) — a late
+			// completion must not resurrect it as a report to be spoken.
+			if (t.id !== taskId || t.status === 'reported') return t;
 			const updated: TaskRecord = {
 				...t,
 				status: 'done',
 				outcome: 'done',
 				result,
+				...(cards.length > 0 ? { cards } : {}),
 				finishedAt: now,
 				updatedAt: now
 			};
@@ -119,7 +133,9 @@ async function markFailed(
 		const now = new Date().toISOString();
 		const events: TaskBusEvent[] = [];
 		const tasks = file.tasks.map((t) => {
-			if (t.id !== taskId) return t;
+			// 'reported' here means the user cancelled it (see /api/tasks/cancel) — a late
+			// completion must not resurrect it as a report to be spoken.
+			if (t.id !== taskId || t.status === 'reported') return t;
 			const updated: TaskRecord = {
 				...t,
 				status: 'failed',
@@ -165,7 +181,8 @@ export async function runTask(bindingId: string, taskId: string): Promise<void> 
 		const record = read.ok ? read.file.tasks.find((t) => t.id === taskId) : undefined;
 		if (!record || record.status !== 'queued') return; // vanished (pruned/cleared) or already handled
 
-		await markRunning(bindingId, taskId);
+		if (!(await markRunning(bindingId, taskId))) return; // cancelled meanwhile — never run it
+		if (ac.signal.aborted) return;
 		const { text } = await streamHermesChat({
 			request: record.request,
 			sessionId: `${taskId}:task`, // namespaced, like memory-review's `:review` suffix — never
@@ -178,7 +195,10 @@ export async function runTask(bindingId: string, taskId: string): Promise<void> 
 			onToolProgress: (p) =>
 				publish(bindingId, { type: 'task.progress', id: taskId, tool: p.tool, label: p.label })
 		});
-		await markDone(bindingId, taskId, sanitizeResult(text));
+		// Display cards are split off before sanitizing: the voice model only ever gets the
+		// spoken text, never the JSON block.
+		const split = extractCards(text);
+		await markDone(bindingId, taskId, sanitizeResult(split.text), split.cards);
 	} catch (err) {
 		await markFailed(bindingId, taskId, classifyRunFailure(err)).catch((e) =>
 			console.error('markFailed threw', e)

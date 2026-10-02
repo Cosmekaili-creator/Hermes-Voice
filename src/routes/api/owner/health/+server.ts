@@ -1,6 +1,6 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
 import { getActiveProvider } from '$lib/providers/active.server';
-import { requireOwner, requireVoiceKey } from '$lib/server/auth';
+import { isStrongVoiceKey, requireOwner, requireVoiceKey } from '$lib/server/auth';
 import {
 	ensureBindingsImported,
 	isMultiUserMode,
@@ -43,7 +43,9 @@ export const GET: RequestHandler = async (event) => {
 			setupComplete: isSetupComplete(),
 			provider,
 			voice: {
-				ok: Boolean(readEnvTrimmed('VOICE_URL_KEY'))
+				ok: Boolean(readEnvTrimmed('VOICE_URL_KEY')),
+				// Legacy keys predating the strength rule keep working — surface it instead.
+				weakKey: !isStrongVoiceKey(readEnvTrimmed('VOICE_URL_KEY') ?? '')
 			},
 			voiceProvider,
 			...providerFields,
@@ -77,6 +79,7 @@ export const GET: RequestHandler = async (event) => {
 		if (!hermes.ok) allHermesOk = false;
 		users.push({
 			...redactBinding(u),
+			weakKey: !isStrongVoiceKey(u.voiceKey),
 			hermes: hermes.ok ? { ok: true } : { ok: false, code: hermes.code }
 		});
 	}

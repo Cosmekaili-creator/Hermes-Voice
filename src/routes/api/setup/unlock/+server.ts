@@ -2,9 +2,9 @@ import { json, type RequestHandler } from '@sveltejs/kit';
 import { assertSameOrigin } from '$lib/server/origin.server';
 import { enforceRateLimit, RATE } from '$lib/server/rateLimit.server';
 import {
+	checkSetupToken,
 	getSetupMode,
 	grantSetupCookie,
-	isValidSetupToken,
 	extractSetupToken
 } from '$lib/server/setupMode.server';
 
@@ -18,7 +18,7 @@ export const POST: RequestHandler = async (event) => {
 
 	const body = await event.request.json().catch(() => ({}));
 	const token = extractSetupToken(event, body);
-	if (!isValidSetupToken(token)) {
+	if (!checkSetupToken(event, token)) {
 		return json({ ok: false, code: 'invalid_token' }, { status: 403 });
 	}
 

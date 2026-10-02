@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { takeRateLimit } from './rateLimit.server';
+import type { RequestEvent } from '@sveltejs/kit';
+import { enforceRateLimit, takeRateLimit } from './rateLimit.server';
 
 /** In-memory bucket map is module-scoped — always use a unique key per test. */
 function uniqueKey(name: string): string {
@@ -43,5 +44,28 @@ describe('takeRateLimit', () => {
 				resolve();
 			}, 25);
 		});
+	});
+});
+
+describe('enforceRateLimit', () => {
+	it('throws a 429 HttpError (not a raw Response, which SvelteKit turns into a 500) and records Retry-After on locals', () => {
+		const locals: { retryAfterSec?: number } = {};
+		const ip = `198.51.100.${Math.floor(Math.random() * 250) + 1}`;
+		const event = {
+			request: new Request('https://x.test/api'),
+			getClientAddress: () => ip,
+			locals
+		} as unknown as RequestEvent;
+		const bucket = uniqueKey('enforce');
+		enforceRateLimit(event, bucket, 1, 60_000);
+		let thrown: unknown;
+		try {
+			enforceRateLimit(event, bucket, 1, 60_000);
+		} catch (err) {
+			thrown = err;
+		}
+		expect(thrown).not.toBeInstanceOf(Response);
+		expect((thrown as { status?: number }).status).toBe(429);
+		expect(locals.retryAfterSec).toBeGreaterThan(0);
 	});
 });

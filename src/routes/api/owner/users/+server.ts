@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { json, type RequestHandler } from '@sveltejs/kit';
 import { normalizePersona } from '$lib/persona/types';
-import { requireOwner, requireVoiceKey } from '$lib/server/auth';
+import { isStrongVoiceKey, requireOwner, requireVoiceKey } from '$lib/server/auth';
 import {
 	defaultHermesBase,
 	defaultSessionKey,
@@ -58,6 +58,9 @@ export const POST: RequestHandler = async (event) => {
 
 	if (!label) return json({ ok: false, code: 'missing_label' }, { status: 400 });
 	if (!voiceKey) return json({ ok: false, code: 'missing_voice_key' }, { status: 400 });
+	if (!isStrongVoiceKey(voiceKey)) {
+		return json({ ok: false, code: 'weak_voice_key' }, { status: 400 });
+	}
 	if (!hermesApiKey) return json({ ok: false, code: 'missing_hermes_key' }, { status: 400 });
 
 	if (roleRaw === 'owner') {

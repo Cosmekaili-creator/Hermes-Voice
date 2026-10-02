@@ -52,6 +52,19 @@ export const START_TASK_TOOL = {
 					'True when you have already answered the user from your own knowledge and this task only enriches ' +
 					'that answer later. Skips the short inline wait so the conversation never stalls. Leave it out ' +
 					'when the user is waiting on this task for their answer.'
+			},
+			requires_approval: {
+				type: 'boolean',
+				description:
+					'True for anything with a real-world effect (sending, replying, booking, buying, paying, deleting, ' +
+					'creating or moving calendar entries, changing settings or systems). The user must approve on ' +
+					'screen or out loud before it runs.'
+			},
+			approval_summary: {
+				type: 'string',
+				description:
+					'With requires_approval: one short line saying exactly what will happen, e.g. "Send Marc an email ' +
+					'moving today\'s call to Thursday".'
 			}
 		},
 		required: ['request']
@@ -66,10 +79,32 @@ export const CLEAR_TASK_QUEUE_TOOL = {
 	parameters: { type: 'object', properties: {}, required: [] }
 } as const;
 
+export const RESOLVE_APPROVAL_TOOL = {
+	type: 'function',
+	name: 'resolve_approval',
+	description:
+		"Record the user's spoken answer to the action currently waiting for approval (shown on screen). " +
+		'Call it only when the user clearly says yes or no to that pending action.',
+	parameters: {
+		type: 'object',
+		properties: {
+			approved: {
+				type: 'boolean',
+				description: 'True if the user approved the pending action, false if they declined.'
+			},
+			approval_id: {
+				type: 'string',
+				description: 'The approval_id given in the start_task result for this pending action.'
+			}
+		},
+		required: ['approved', 'approval_id']
+	}
+} as const;
+
 /** Async-tasks-off (kill switch, Part F): only the legacy blocking tool is registered. */
 const LEGACY_TOOLS = [ASK_HERMES_TOOL];
 /** Async-tasks-on (default): dispatch + clear, no ask_hermes. */
-const ASYNC_TOOLS = [START_TASK_TOOL, CLEAR_TASK_QUEUE_TOOL];
+const ASYNC_TOOLS = [START_TASK_TOOL, CLEAR_TASK_QUEUE_TOOL, RESOLVE_APPROVAL_TOOL];
 
 /** Which tools get sent in `session.update.tools`, gated on the VOICE_ASYNC_TASKS flag
  * threaded through from the server (see active.server.ts's getAsyncTasksEnabled() /
