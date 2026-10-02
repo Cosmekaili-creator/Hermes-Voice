@@ -188,4 +188,28 @@ test.describe('lounge upgrades', () => {
 		await page.getByRole('button', { name: 'Exit ambient mode' }).click();
 		await expect(ambient).toBeHidden();
 	});
+
+	test('overlays trap focus, close on Escape from anywhere, and return focus to the opener', async ({
+		page
+	}) => {
+		await page.goto('/?k=ci-test-key');
+		await page.getByRole('button', { name: 'Got it' }).click();
+		const opener = page.getByRole('button', { name: 'Open conversation' });
+		await opener.click();
+		const sheet = page.getByRole('dialog', { name: 'Conversation' });
+		await expect(sheet).toBeVisible();
+		for (let i = 0; i < 12; i++) {
+			await page.keyboard.press('Tab');
+			const inside = await page.evaluate(
+				() =>
+					!!document.activeElement?.closest('[role="dialog"]') ||
+					document.activeElement === document.body
+			);
+			expect(inside).toBe(true);
+		}
+		await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+		await page.keyboard.press('Escape');
+		await expect(sheet).toBeHidden();
+		await expect(opener).toBeFocused();
+	});
 });

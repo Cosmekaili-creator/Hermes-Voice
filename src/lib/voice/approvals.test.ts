@@ -8,7 +8,24 @@ describe('looksLikeSideEffect', () => {
 			'Find the Baan Thai restaurant and book a table for two at 8pm.',
 			'Look up the concert date, then add it to my calendar.',
 			'Please delete the draft called Q3 notes.',
-			'Reply to Anna saying yes.'
+			'Reply to Anna saying yes.',
+			'Could you send Marc an email about Thursday?',
+			'I need you to email the landlord about the heating.',
+			'Let Marc know I will be late.',
+			'Tell Marc via Slack that the deploy is done.',
+			'Wire 500 euros to Anna.',
+			'Ping the team channel.',
+			'Turn off the lights in the living room.',
+			'Unlock the front door.',
+			'Mark all emails as read.',
+			'Grant Bob access to the shared drive.',
+			'Merge the open PR.',
+			'Write to the landlord about the leak.',
+			'Remind Marc about the invoice.',
+			'Envoie un email à Marc pour décaler la réunion.',
+			'Réserve une table pour deux ce soir.',
+			'Reserva una mesa para dos esta noche.',
+			'Envía un correo a Ana.'
 		]) {
 			expect(looksLikeSideEffect(brief), brief).toBe(true);
 		}
@@ -19,7 +36,11 @@ describe('looksLikeSideEffect', () => {
 			'What did Marc send me yesterday?',
 			'Summarize my unread email.',
 			'What is the weather in Lyon this weekend?',
-			'Which meetings were cancelled this week?'
+			'Which meetings were cancelled this week?',
+			'Open the event page and read me the lineup.',
+			'Find the opening hours of the museum.',
+			'Quel temps fera-t-il demain à Lyon ?',
+			'¿Qué tiempo hará mañana en Madrid?'
 		]) {
 			expect(looksLikeSideEffect(brief), brief).toBe(false);
 		}

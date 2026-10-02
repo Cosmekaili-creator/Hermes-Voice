@@ -89,10 +89,29 @@ export function reviveEntry(raw: unknown): TimelineEntry | null {
 	}
 }
 
-function readStored(): TimelineEntry[] {
+/** Per-user storage key — a shared browser must never show one binding another's history. */
+export function timelineStorageKey(scope: string | null | undefined): string {
+	return scope ? `${TIMELINE_STORAGE_KEY}:${scope}` : TIMELINE_STORAGE_KEY;
+}
+
+/** Remove every stored timeline (all users) — used when the Lounge is locked. */
+export function clearAllStoredTimelines(): void {
+	if (typeof localStorage === 'undefined') return;
+	try {
+		for (let i = localStorage.length - 1; i >= 0; i--) {
+			const key = localStorage.key(i);
+			if (key && key.startsWith(TIMELINE_STORAGE_KEY)) localStorage.removeItem(key);
+		}
+	} catch {
+		/* ignore */
+	}
+}
+
+function readStored(key: string): TimelineEntry[] {
 	if (typeof localStorage === 'undefined') return [];
 	try {
-		const raw = localStorage.getItem(TIMELINE_STORAGE_KEY);
+		if (key !== TIMELINE_STORAGE_KEY) localStorage.removeItem(TIMELINE_STORAGE_KEY); // pre-scoping data
+		const raw = localStorage.getItem(key);
 		if (!raw) return [];
 		const parsed = JSON.parse(raw) as unknown;
 		if (!Array.isArray(parsed)) return [];
@@ -107,10 +126,10 @@ function readStored(): TimelineEntry[] {
 	}
 }
 
-function writeStored(entries: TimelineEntry[]): void {
+function writeStored(key: string, entries: TimelineEntry[]): void {
 	if (typeof localStorage === 'undefined') return;
 	try {
-		localStorage.setItem(TIMELINE_STORAGE_KEY, JSON.stringify(entries));
+		localStorage.setItem(key, JSON.stringify(entries));
 	} catch {
 		/* quota / private mode — the in-memory timeline still works */
 	}
@@ -162,9 +181,10 @@ export function exportTimelineText(
 		.join('\n');
 }
 
-export function createTimeline(opts: { persist?: boolean } = {}) {
+export function createTimeline(opts: { persist?: boolean; scope?: string | null } = {}) {
 	const persist = opts.persist !== false;
-	let entries = $state<TimelineEntry[]>(persist ? readStored() : []);
+	const storageKey = timelineStorageKey(opts.scope);
+	let entries = $state<TimelineEntry[]>(persist ? readStored(storageKey) : []);
 	let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 	function scheduleSave() {
@@ -172,7 +192,7 @@ export function createTimeline(opts: { persist?: boolean } = {}) {
 		if (saveTimer !== null) clearTimeout(saveTimer);
 		saveTimer = setTimeout(() => {
 			saveTimer = null;
-			writeStored(entries);
+			writeStored(storageKey, entries);
 		}, 400);
 	}
 
@@ -236,7 +256,7 @@ export function createTimeline(opts: { persist?: boolean } = {}) {
 		}
 		if (persist && typeof localStorage !== 'undefined') {
 			try {
-				localStorage.removeItem(TIMELINE_STORAGE_KEY);
+				localStorage.removeItem(storageKey);
 			} catch {
 				/* ignore */
 			}

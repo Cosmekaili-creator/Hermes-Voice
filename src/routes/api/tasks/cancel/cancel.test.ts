@@ -103,4 +103,15 @@ describe('POST /api/tasks/cancel', () => {
 	it('refuses unauthenticated callers', async () => {
 		await expect(POST(makeEvent({ id: randomUUID() }))).rejects.toMatchObject({ status: 401 });
 	});
+
+	it('also aborts a queued task the runner already picked up (cancel/runner race)', async () => {
+		const queued = task('queued');
+		await writeTasksAtomic('env', { version: 1, tasks: [queued] });
+		const ac = new AbortController();
+		abortByTask.set(queued.id, ac);
+		const res = await POST(makeEvent({ k: VOICE_KEY, id: queued.id }));
+		expect(res.status).toBe(200);
+		expect(ac.signal.aborted).toBe(true);
+		abortByTask.delete(queued.id);
+	});
 });

@@ -61,8 +61,9 @@
 		if (open) void tick().then(() => sheetEl?.focus());
 	});
 
+	/** Window-level so Escape works wherever focus is (and background content is inert). */
 	function onKeydown(event: KeyboardEvent) {
-		if (event.key === 'Escape') {
+		if (open && event.key === 'Escape') {
 			event.stopPropagation();
 			onClose();
 		}
@@ -112,6 +113,8 @@
 	}
 </script>
 
+<svelte:window onkeydown={onKeydown} />
+
 {#if open}
 	<button
 		type="button"
@@ -128,7 +131,6 @@
 		aria-labelledby="timeline-title"
 		tabindex="-1"
 		bind:this={sheetEl}
-		onkeydown={onKeydown}
 		transition:fly={{ y: 420, duration: 260 }}
 	>
 		<div

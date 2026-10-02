@@ -91,6 +91,10 @@ export const RESOLVE_APPROVAL_TOOL = {
 			approved: {
 				type: 'boolean',
 				description: 'True if the user approved the pending action, false if they declined.'
+			},
+			approval_id: {
+				type: 'string',
+				description: 'The approval_id given in the start_task result for this pending action.'
 			}
 		},
 		required: ['approved']

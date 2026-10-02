@@ -31,4 +31,17 @@ describe('sessionSecret', () => {
 		resetSessionSecretCache();
 		expect(sessionSecret()).toBe('x'.repeat(40));
 	});
+
+	it('prefers systemd STATE_DIRECTORY for the secret file', async () => {
+		delete process.env.SESSION_SECRET;
+		const dir = await mkdtemp(path.join(tmpdir(), 'hv-state-'));
+		process.env.STATE_DIRECTORY = dir;
+		resetSessionSecretCache();
+		try {
+			const secret = sessionSecret();
+			expect((await readFile(path.join(dir, 'session.secret'), 'utf8')).trim()).toBe(secret);
+		} finally {
+			delete process.env.STATE_DIRECTORY;
+		}
+	});
 });

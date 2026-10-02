@@ -88,6 +88,8 @@
 	}
 </script>
 
+<svelte:window onkeydown={onKeydown} />
+
 <div
 	class="ambient"
 	data-state={voiceState}
@@ -96,7 +98,6 @@
 	aria-label={t('ambient.title')}
 	tabindex="-1"
 	bind:this={rootEl}
-	onkeydown={onKeydown}
 	transition:fade={{ duration: 300 }}
 >
 	<div class="ambient__info">

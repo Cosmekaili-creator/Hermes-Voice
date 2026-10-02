@@ -25,7 +25,9 @@ export const MAX_CARDS = 6;
 const MAX_TITLE = 120;
 const MAX_FIELD = 240;
 
-const FENCE_RE = /```hv-cards\s*\n([\s\S]*?)```/i;
+const FENCE_RE = /```hv-cards\s*\n([\s\S]*?)```/gi;
+/** A block cut off before its closing fence (truncated output) — still never spoken. */
+const OPEN_FENCE_RE = /```hv-cards[\s\S]*$/i;
 
 // eslint-disable-next-line no-control-regex
 const CONTROL_RE = /[\x00-\x1F\x7F-\x9F]/g;
@@ -105,14 +107,24 @@ function compact(card: ResultCard): ResultCard {
  * removed from the spoken text, even when it fails to parse (never read JSON aloud).
  */
 export function extractCards(text: string): { text: string; cards: ResultCard[] } {
-	const match = FENCE_RE.exec(text);
-	if (!match) return { text, cards: [] };
-	const spoken = (text.slice(0, match.index) + text.slice(match.index + match[0].length)).trim();
-	try {
-		return { text: spoken, cards: sanitizeCards(JSON.parse(match[1] ?? '')).map(compact) };
-	} catch {
-		return { text: spoken, cards: [] };
+	const cards: ResultCard[] = [];
+	let found = false;
+	let spoken = text.replace(FENCE_RE, (_m, body: string) => {
+		found = true;
+		try {
+			for (const c of sanitizeCards(JSON.parse(body ?? ''))) {
+				if (cards.length < MAX_CARDS) cards.push(compact(c));
+			}
+		} catch {
+			/* malformed block — dropped, but still removed from the spoken text */
+		}
+		return '';
+	});
+	if (OPEN_FENCE_RE.test(spoken)) {
+		found = true;
+		spoken = spoken.replace(OPEN_FENCE_RE, '');
 	}
+	return found ? { text: spoken.trim(), cards } : { text, cards };
 }
 
 /** Appended to Hermes task prompts so it knows it MAY attach cards. */

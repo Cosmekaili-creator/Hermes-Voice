@@ -43,8 +43,9 @@
 		if (open) void tick().then(() => panelEl?.focus());
 	});
 
+	/** Window-level so Escape works wherever focus is (and background content is inert). */
 	function onKeydown(event: KeyboardEvent) {
-		if (event.key === 'Escape') {
+		if (open && event.key === 'Escape') {
 			event.stopPropagation();
 			onClose();
 		}
@@ -59,6 +60,8 @@
 		dragStartY = null;
 	}
 </script>
+
+<svelte:window onkeydown={onKeydown} />
 
 {#if open}
 	<button
@@ -76,7 +79,6 @@
 		aria-labelledby="control-title"
 		tabindex="-1"
 		bind:this={panelEl}
-		onkeydown={onKeydown}
 		transition:fly={{ y: -360, duration: 240 }}
 	>
 		<h2 class="panel__title" id="control-title">{t('control.title')}</h2>

@@ -6,7 +6,7 @@ import { abortByTask } from '$lib/server/tasks/runner.server';
 import { mutateTasks } from '$lib/server/tasks/store.server';
 import type { TaskBusEvent, TaskRecord } from '$lib/server/tasks/types';
 
-type CancelResult = { found: boolean; wasRunning: boolean };
+type CancelResult = { found: boolean };
 
 /**
  * POST { id } — the user cancels ONE queued or running task from the task orbit.
@@ -37,11 +37,9 @@ export const POST: RequestHandler = async (event) => {
 	const result = await mutateTasks<CancelResult>(binding.id, (file) => {
 		const now = new Date().toISOString();
 		let found = false;
-		let wasRunning = false;
 		const tasks = file.tasks.map((t) => {
 			if (t.id !== id || (t.status !== 'queued' && t.status !== 'running')) return t;
 			found = true;
-			wasRunning = t.status === 'running';
 			const updated: TaskRecord = {
 				...t,
 				status: 'reported',
@@ -56,7 +54,7 @@ export const POST: RequestHandler = async (event) => {
 			return updated;
 		});
 		const events: TaskBusEvent[] = found ? [{ type: 'task.cleared', ids: [id] }] : [];
-		return { file: { version: 1, tasks }, result: { found, wasRunning }, events };
+		return { file: { version: 1, tasks }, result: { found }, events };
 	});
 
 	if (!result.ok) {
@@ -65,8 +63,8 @@ export const POST: RequestHandler = async (event) => {
 	if (!result.result.found) {
 		return json({ ok: false, code: 'not_found' }, { status: 404 });
 	}
-	if (result.result.wasRunning) {
-		abortByTask.get(id)?.abort();
-	}
+	// Abort unconditionally: a task we saw as 'queued' may already have been picked up by
+	// the runner (its controller exists before markRunning) — the runner also re-checks.
+	abortByTask.get(id)?.abort();
 	return json({ ok: true });
 };

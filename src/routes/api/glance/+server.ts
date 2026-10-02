@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { json, type RequestHandler } from '@sveltejs/kit';
 import { requireVoiceKey } from '$lib/server/auth';
 import {
@@ -14,6 +15,9 @@ import { enforceRateLimit, RATE } from '$lib/server/rateLimit.server';
 
 /** Per-binding cache — ambient screens refresh every few minutes; Hermes runs are costly. */
 const cache = new Map<string, { at: number; glance: Glance }>();
+/** Failures are cached briefly too, so a broken Hermes isn't re-run on every refresh. */
+const failedAt = new Map<string, number>();
+const FAILURE_CACHE_MS = 2 * 60_000;
 const inFlight = new Map<string, Promise<Glance | null>>();
 
 /**
@@ -32,11 +36,18 @@ export const POST: RequestHandler = async (event) => {
 		return json({ ok: true, ...hit.glance, fetchedAt: hit.at });
 	}
 
+	const failed = failedAt.get(binding.id);
+	if (failed && Date.now() - failed < FAILURE_CACHE_MS) {
+		return json({ ok: false, code: 'glance_unavailable' }, { status: 503 });
+	}
+
 	let pending = inFlight.get(binding.id);
 	if (!pending) {
 		pending = callHermesChat({
 			request: buildGlancePrompt(new Date().toISOString()),
-			sessionId: `glance:${binding.id}`,
+			// Fresh Hermes session per run: nothing read from one inbox snapshot (e.g. text
+			// injected in an email) carries over into the next run's context.
+			sessionId: `glance:${binding.id}:${randomUUID()}`,
 			hermesApiBase: binding.hermesApiBase,
 			hermesApiKey: binding.hermesApiKey,
 			hermesSessionKey: binding.hermesSessionKey,
@@ -51,8 +62,10 @@ export const POST: RequestHandler = async (event) => {
 
 	const glance = await pending;
 	if (!glance) {
+		failedAt.set(binding.id, Date.now());
 		return json({ ok: false, code: 'glance_unavailable' }, { status: 503 });
 	}
+	failedAt.delete(binding.id);
 	const at = Date.now();
 	cache.set(binding.id, { at, glance });
 	return json({ ok: true, ...glance, fetchedAt: at });

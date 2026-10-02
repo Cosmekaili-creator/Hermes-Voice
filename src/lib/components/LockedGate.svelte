@@ -2,7 +2,9 @@
 	import { browser } from '$app/environment';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
+	import { onMount } from 'svelte';
 	import { getLocale, t, type Locale } from '$lib/i18n';
+	import { clearAllStoredTimelines } from '$lib/voice/timeline.svelte';
 	import LocaleSwitch from './LocaleSwitch.svelte';
 
 	type SetupMode = 'bootstrap' | 'ops_locked' | 'complete';
@@ -10,6 +12,10 @@
 	let { setupMode }: { setupMode?: SetupMode } = $props();
 
 	const locale = $derived((browser ? getLocale() : page.data.locale) as Locale);
+
+	// Locked (signed out, key rotated, or a different person at this browser): don't leave
+	// anyone's conversation history behind on the device.
+	onMount(() => clearAllStoredTimelines());
 </script>
 
 <div class="gate">

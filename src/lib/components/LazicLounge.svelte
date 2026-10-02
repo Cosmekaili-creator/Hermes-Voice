@@ -30,12 +30,14 @@
 		persona = DEFAULT_PERSONA,
 		provider,
 		isOwner = false,
-		asyncTasksEnabled = true
+		asyncTasksEnabled = true,
+		timelineScope = null
 	}: {
 		persona?: VoicePersona;
 		provider?: ProviderId;
 		isOwner?: boolean;
 		asyncTasksEnabled?: boolean;
+		timelineScope?: string | null;
 	} = $props();
 
 	let settingsOpen = $state(false);
@@ -62,11 +64,12 @@
 	// implies a different session entirely) — read once intentionally, not reactively.
 	const SPEECH_TIMELINE_KEY = 'hermes-voice.speechInTimeline';
 	function readSpeechInTimeline(): boolean {
-		if (!browser) return true;
+		// Opt-in: turning it on enables the provider's input transcription.
+		if (!browser) return false;
 		try {
-			return localStorage.getItem(SPEECH_TIMELINE_KEY) !== '0';
+			return localStorage.getItem(SPEECH_TIMELINE_KEY) === '1';
 		} catch {
-			return true;
+			return false;
 		}
 	}
 
@@ -76,7 +79,7 @@
 	let controlOpen = $state(false);
 	let ambientOpen = $state(false);
 
-	const timeline = createTimeline({ persist: browser });
+	const timeline = createTimeline({ persist: browser, scope: untrack(() => timelineScope) });
 
 	const demo = createVoiceDemo({
 		persona: untrack(() => persona),
@@ -222,6 +225,22 @@
 	}
 
 	let orbRadius = $state(150);
+
+	// --- Overlays: background goes inert (no Tab escape, no stray clicks) and focus returns
+	// to whatever opened the overlay once it closes.
+	const overlayOpen = $derived(timelineOpen || controlOpen || ambientOpen);
+	let focusBeforeOverlay: HTMLElement | null = null;
+	$effect(() => {
+		if (overlayOpen) {
+			if (!focusBeforeOverlay && document.activeElement instanceof HTMLElement) {
+				focusBeforeOverlay = document.activeElement;
+			}
+			return;
+		}
+		const target = focusBeforeOverlay;
+		focusBeforeOverlay = null;
+		if (target && target.isConnected) queueMicrotask(() => target.focus());
+	});
 	let orbitSelectedId = $state<string | null>(null);
 	const wakeLock = createScreenWakeLock();
 	/** Must match AnalyserNode.frequencyBinCount for fftSize 512 (not fftSize itself). */
@@ -452,167 +471,169 @@
 	onpointerdown={onStageDown}
 	onpointerup={onStageUp}
 >
-	<div class="glow-field" aria-hidden="true"></div>
-	<canvas class="viz" bind:this={canvasEl} aria-hidden="true"></canvas>
+	<div class="stage-bg" inert={overlayOpen}>
+		<div class="glow-field" aria-hidden="true"></div>
+		<canvas class="viz" bind:this={canvasEl} aria-hidden="true"></canvas>
 
-	<button
-		type="button"
-		class="control-handle"
-		aria-label={pt('control.open')}
-		aria-expanded={controlOpen}
-		onclick={() => (controlOpen = true)}
-	>
-		<span class="control-handle__bar" aria-hidden="true"></span>
-		<span class="control-handle__meta">
-			{demo.talkMode === 'handsfree' ? pt('mode.handsfree') : pt('mode.ptt')} · {getLocale().toUpperCase()}
-			· {PROVIDER_LABELS[demo.provider ?? provider ?? 'xai']}
-		</span>
-	</button>
-
-	{#if demo.captionLines.length > 0 || demo.captionUserEcho || demo.captionPhase !== 'hidden'}
-		<div
-			class="captions"
-			class:captions--fade={demo.captionPhase === 'fading'}
-			aria-live="off"
-			aria-label={pt('status.captions')}
-			bind:this={captionsEl}
-			onscroll={onCaptionScroll}
+		<button
+			type="button"
+			class="control-handle"
+			aria-label={pt('control.open')}
+			aria-expanded={controlOpen}
+			onclick={() => (controlOpen = true)}
 		>
-			{#if demo.captionUserEcho}
-				<p class="captions__line captions__line--user">{demo.captionUserEcho}</p>
-			{/if}
-			{#each demo.captionLines as line (line.id)}
-				<p
-					class="captions__line"
-					class:captions__line--soft={line.soft}
-					in:fly={{ y: 6, duration: 220 }}
-					out:fly={{ y: -10, duration: 280 }}
-				>
-					{line.text}
-				</p>
-			{/each}
-		</div>
-	{/if}
+			<span class="control-handle__bar" aria-hidden="true"></span>
+			<span class="control-handle__meta">
+				{demo.talkMode === 'handsfree' ? pt('mode.handsfree') : pt('mode.ptt')} · {getLocale().toUpperCase()}
+				· {PROVIDER_LABELS[demo.provider ?? provider ?? 'xai']}
+			</span>
+		</button>
 
-	<button
-		type="button"
-		class="orb talk"
-		class:talk--cancel={demo.isHermesWorking}
-		style:--orb-size="{orbRadius * 2}px"
-		aria-pressed={pressed}
-		aria-label={buttonLabel}
-		aria-describedby="orb-hint"
-		disabled={demo.buttonDisabled}
-		onpointerdown={onOrbDown}
-		onpointerup={onOrbUp}
-		onpointercancel={onOrbCancel}
-		onclick={onOrbClick}
-	>
-		<span class="brand">{persona.assistantName.toUpperCase()}</span>
-		<span class="status" aria-live="polite">{demo.statusLabel}</span>
-	</button>
+		{#if demo.captionLines.length > 0 || demo.captionUserEcho || demo.captionPhase !== 'hidden'}
+			<div
+				class="captions"
+				class:captions--fade={demo.captionPhase === 'fading'}
+				aria-live="off"
+				aria-label={pt('status.captions')}
+				bind:this={captionsEl}
+				onscroll={onCaptionScroll}
+			>
+				{#if demo.captionUserEcho}
+					<p class="captions__line captions__line--user">{demo.captionUserEcho}</p>
+				{/if}
+				{#each demo.captionLines as line (line.id)}
+					<p
+						class="captions__line"
+						class:captions__line--soft={line.soft}
+						in:fly={{ y: 6, duration: 220 }}
+						out:fly={{ y: -10, duration: 280 }}
+					>
+						{line.text}
+					</p>
+				{/each}
+			</div>
+		{/if}
 
-	<TaskOrbit
-		bind:selectedId={orbitSelectedId}
-		tasks={demo.orbitTasks}
-		radius={orbRadius}
-		onCancel={(id) => void demo.cancelTask(id)}
-		onSpeak={() => demo.speakPendingReports()}
-	/>
+		<button
+			type="button"
+			class="orb talk"
+			class:talk--cancel={demo.isHermesWorking}
+			style:--orb-size="{orbRadius * 2}px"
+			aria-pressed={pressed}
+			aria-label={buttonLabel}
+			aria-describedby="orb-hint"
+			disabled={demo.buttonDisabled}
+			onpointerdown={onOrbDown}
+			onpointerup={onOrbUp}
+			onpointercancel={onOrbCancel}
+			onclick={onOrbClick}
+		>
+			<span class="brand">{persona.assistantName.toUpperCase()}</span>
+			<span class="status" aria-live="polite">{demo.statusLabel}</span>
+		</button>
 
-	<div class="under-orb" style:--orb-size="{orbRadius * 2}px">
-		{#if demo.voiceFallbackNotice}
-			<!-- B12 connect-time voice fallback: a rejected per-binding voice degraded
+		<TaskOrbit
+			bind:selectedId={orbitSelectedId}
+			tasks={demo.orbitTasks}
+			radius={orbRadius}
+			onCancel={(id) => void demo.cancelTask(id)}
+			onSpeak={() => demo.speakPendingReports()}
+		/>
+
+		<div class="under-orb" style:--orb-size="{orbRadius * 2}px">
+			{#if demo.voiceFallbackNotice}
+				<!-- B12 connect-time voice fallback: a rejected per-binding voice degraded
 			     gracefully to the provider default instead of killing the session — this
 			     is the non-fatal notice surfacing that. -->
-			<p class="status-notice" aria-live="polite">{pt(demo.voiceFallbackNotice as MessageKey)}</p>
-		{/if}
-		{#if demo.statusKey === 'error.micDenied'}
-			<button type="button" class="retry" onclick={() => demo.retryMic()}
-				>{pt('button.retryMic')}</button
-			>
-		{/if}
-		{#if demo.talkMode === 'handsfree' && demo.state === 'speaking'}
-			<p class="mic-chip" class:mic-chip--live={demo.micLive} aria-live="off">
-				<span class="mic-chip__dot" aria-hidden="true"></span>
-				{demo.micLive ? pt('status.micLive') : pt('status.micMuted')}
-			</p>
-		{/if}
-		{#if demo.hermesWaitActivity}
-			<p class="status-activity" aria-live="off">{demo.hermesWaitActivity}</p>
-		{/if}
-		{#if demo.waitElapsedSec !== null}
-			<p class="status-timer" aria-live="off">{demo.waitElapsedSec}s</p>
-		{/if}
-		{#if demo.pendingReportCount > 0 && !latestCards}
-			<button type="button" class="report-chip" onclick={() => demo.speakPendingReports()}>
-				<span class="report-chip__count">{demo.pendingReportCount}</span>
-				{pt('status.resultsReady')}
-			</button>
-		{/if}
-	</div>
+				<p class="status-notice" aria-live="polite">{pt(demo.voiceFallbackNotice as MessageKey)}</p>
+			{/if}
+			{#if demo.statusKey === 'error.micDenied'}
+				<button type="button" class="retry" onclick={() => demo.retryMic()}
+					>{pt('button.retryMic')}</button
+				>
+			{/if}
+			{#if demo.talkMode === 'handsfree' && demo.state === 'speaking'}
+				<p class="mic-chip" class:mic-chip--live={demo.micLive} aria-live="off">
+					<span class="mic-chip__dot" aria-hidden="true"></span>
+					{demo.micLive ? pt('status.micLive') : pt('status.micMuted')}
+				</p>
+			{/if}
+			{#if demo.hermesWaitActivity}
+				<p class="status-activity" aria-live="off">{demo.hermesWaitActivity}</p>
+			{/if}
+			{#if demo.waitElapsedSec !== null}
+				<p class="status-timer" aria-live="off">{demo.waitElapsedSec}s</p>
+			{/if}
+			{#if demo.pendingReportCount > 0 && !latestCards}
+				<button type="button" class="report-chip" onclick={() => demo.speakPendingReports()}>
+					<span class="report-chip__count">{demo.pendingReportCount}</span>
+					{pt('status.resultsReady')}
+				</button>
+			{/if}
+		</div>
 
-	<div class="dock">
-		{#if showMicPrimer}
-			<MicPrimer onDismiss={dismissPrimer} assistantName={persona.assistantName} />
-		{/if}
+		<div class="dock">
+			{#if showMicPrimer}
+				<MicPrimer onDismiss={dismissPrimer} assistantName={persona.assistantName} />
+			{/if}
 
-		{#if demo.pendingApproval}
-			<ApprovalCard
-				approval={demo.pendingApproval}
-				assistantName={persona.assistantName}
-				onApprove={() => void demo.approve(demo.pendingApproval!.id)}
-				onDecline={() => demo.decline(demo.pendingApproval!.id)}
-			/>
-		{:else if latestCards && !orbitSelectedId}
-			<div class="cards-tray" transition:fade={{ duration: 180 }}>
-				<ResultCards cards={latestCards.cards} compact row />
+			{#if demo.pendingApproval}
+				<ApprovalCard
+					approval={demo.pendingApproval}
+					assistantName={persona.assistantName}
+					onApprove={() => void demo.approve(demo.pendingApproval!.id)}
+					onDecline={() => demo.decline(demo.pendingApproval!.id)}
+				/>
+			{:else if latestCards && !orbitSelectedId}
+				<div class="cards-tray" transition:fade={{ duration: 180 }}>
+					<ResultCards cards={latestCards.cards} compact row />
+					<button
+						type="button"
+						class="cards-tray__dismiss"
+						aria-label={pt('task.close')}
+						onclick={() => (dismissedCardsId = latestCards!.id)}
+					>
+						<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"
+							><path
+								d="M6 6l12 12M18 6L6 18"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+							/></svg
+						>
+					</button>
+				</div>
+			{/if}
+
+			<p class="orb-hint" id="orb-hint">{orbHint}</p>
+
+			<div class="dock__row">
+				<TextComposer
+					enabled={demo.canSendText}
+					onSend={(text) => demo.sendText(text)}
+					assistantName={persona.assistantName}
+				/>
 				<button
 					type="button"
-					class="cards-tray__dismiss"
-					aria-label={pt('task.close')}
-					onclick={() => (dismissedCardsId = latestCards!.id)}
+					class="dock__timeline"
+					aria-label={pt('timeline.open')}
+					aria-expanded={timelineOpen}
+					onclick={() => (timelineOpen = true)}
 				>
-					<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"
+					<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"
 						><path
-							d="M6 6l12 12M18 6L6 18"
+							d="M4 6h16M4 12h16M4 18h10"
+							fill="none"
 							stroke="currentColor"
 							stroke-width="2"
 							stroke-linecap="round"
 						/></svg
 					>
+					{#if timeline.entries.length > 0}<span class="dock__dot" aria-hidden="true"></span>{/if}
 				</button>
 			</div>
-		{/if}
-
-		<p class="orb-hint" id="orb-hint">{orbHint}</p>
-
-		<div class="dock__row">
-			<TextComposer
-				enabled={demo.canSendText}
-				onSend={(text) => demo.sendText(text)}
-				assistantName={persona.assistantName}
-			/>
-			<button
-				type="button"
-				class="dock__timeline"
-				aria-label={pt('timeline.open')}
-				aria-expanded={timelineOpen}
-				onclick={() => (timelineOpen = true)}
-			>
-				<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"
-					><path
-						d="M4 6h16M4 12h16M4 18h10"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-						stroke-linecap="round"
-					/></svg
-				>
-				{#if timeline.entries.length > 0}<span class="dock__dot" aria-hidden="true"></span>{/if}
-			</button>
+			<span class="home-bar" aria-hidden="true"></span>
 		</div>
-		<span class="home-bar" aria-hidden="true"></span>
 	</div>
 
 	<TimelineSheet
@@ -1195,5 +1216,10 @@
 			transform: scale(1.45);
 			opacity: 0.55;
 		}
+	}
+
+	/* Wrapper only exists to make the background inert while an overlay is open. */
+	.stage-bg {
+		display: contents;
 	}
 </style>

@@ -29,6 +29,7 @@
 		provider={data.provider}
 		isOwner={data.isOwner}
 		asyncTasksEnabled={data.asyncTasksEnabled}
+		timelineScope={data.timelineScope}
 	/>
 {:else}
 	<LockedGate setupMode={data.setupMode} />

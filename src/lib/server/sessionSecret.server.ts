@@ -9,13 +9,18 @@ import { readEnvTrimmed } from '$lib/server/runtimeEnv.server';
  * guess. That makes cookie guesses useless for brute-forcing keys — the cookie path then
  * needs no failed-attempt lockout, and nobody sharing an IP can sign others out.
  *
- * Source order: `SESSION_SECRET` env → `<data dir>/session.secret` (created 0600 on first
- * use) → an in-memory random secret (logged; sessions then reset on restart).
+ * Source order: `SESSION_SECRET` env → `session.secret` (created 0600 on first use) in
+ * systemd's `$STATE_DIRECTORY` if set, else next to `BINDINGS_FILE` / `./data` → an
+ * in-memory random secret (logged; sessions then reset on restart).
  * Rotating/deleting the secret signs every browser out (they re-open their `?k=` link).
  */
 let cached: string | null = null;
 
 function secretFilePath(): string {
+	// systemd `StateDirectory=` (may list several, colon-separated) — writable even under
+	// ProtectSystem=strict.
+	const stateDir = process.env.STATE_DIRECTORY?.split(':')[0]?.trim();
+	if (stateDir) return path.join(stateDir, 'session.secret');
 	const bindings = readEnvTrimmed('BINDINGS_FILE');
 	const dir = bindings ? path.dirname(path.resolve(bindings)) : path.join(process.cwd(), 'data');
 	return path.join(dir, 'session.secret');
@@ -27,6 +32,9 @@ export function sessionSecret(): string {
 	if (fromEnv && fromEnv.length >= 32) {
 		cached = fromEnv;
 		return cached;
+	}
+	if (fromEnv) {
+		console.warn('Hermes Voice: SESSION_SECRET is shorter than 32 characters and is ignored.');
 	}
 	const file = secretFilePath();
 	try {

@@ -448,6 +448,13 @@ export function createVoiceDemo(
 	let orbitTasks = $state<OrbitTask[]>([]);
 	/** Side-effect tasks waiting for the user's go-ahead (approval card), oldest first. */
 	let pendingApprovals = $state<PendingApproval[]>([]);
+	/**
+	 * Count of genuine user turns (PTT release, hands-free speech end, typed message). A
+	 * spoken approval (resolve_approval) is only honoured if a user turn happened AFTER the
+	 * approval was created — the model can never approve its own action in the same breath
+	 * (or because a tool result told it to).
+	 */
+	let userTurnSeq = 0;
 	/** Task ids whose result cards already went into the timeline (bus events can repeat). */
 	const cardsLogged = new SvelteSet<string>();
 	/** Assistant speech for the current response, committed to the timeline on response.done. */
@@ -2148,6 +2155,11 @@ export function createVoiceDemo(
 		if (!approval) return;
 		timeline?.setApproval(approval.id, 'approved');
 		pulse(8);
+		if (approval.legacy) {
+			// Legacy blocking bridge: the ask_hermes call was held open — run it now.
+			void runHermesBridge(approval.callId, approval.request, turnId);
+			return;
+		}
 		const ok = await dispatchApproved(approval);
 		if (!ok) statusOverride = { kind: 'key', key: 'error.voiceToolError' };
 	}
@@ -2156,11 +2168,37 @@ export function createVoiceDemo(
 		const approval = takeApproval(id);
 		if (!approval) return;
 		timeline?.setApproval(approval.id, 'declined');
+		if (approval.legacy) {
+			try {
+				client?.sendFunctionCallOutput(
+					approval.callId,
+					'The user declined on screen — it was NOT done. Do not retry it.'
+				);
+			} catch {
+				/* ignore */
+			}
+		}
 	}
 
 	/** The model relays a spoken yes/no (resolve_approval tool). */
-	async function resolveApprovalByVoice(callId: string, approved: boolean, myTurn: number) {
-		const approval = takeApproval();
+	async function resolveApprovalByVoice(
+		callId: string,
+		approved: boolean,
+		approvalId: string | undefined,
+		myTurn: number
+	) {
+		const candidate = approvalId
+			? pendingApprovals.find((a) => a.id === approvalId)
+			: pendingApprovals[0];
+		if (candidate && userTurnSeq <= candidate.userTurnAtCreate) {
+			await completeToolCall(
+				callId,
+				'Refused: the user has not answered yet. Only the user can approve — wait for them to say yes or no, or to tap the card. Never call resolve_approval on their behalf.',
+				myTurn
+			);
+			return;
+		}
+		const approval = candidate ? takeApproval(candidate.id) : null;
 		if (!approval) {
 			await completeToolCall(
 				callId,
@@ -2322,17 +2360,19 @@ export function createVoiceDemo(
 
 		if (name === 'resolve_approval') {
 			let approved = false;
+			let approvalId: string | undefined;
 			try {
 				const args =
 					typeof event.arguments === 'string'
-						? (JSON.parse(event.arguments) as { approved?: unknown })
+						? (JSON.parse(event.arguments) as { approved?: unknown; approval_id?: unknown })
 						: {};
 				approved = args.approved === true;
+				approvalId = typeof args.approval_id === 'string' ? args.approval_id : undefined;
 			} catch {
 				/* malformed arguments — treated as "not approved" */
 			}
 			beginHermesWorkingUi(myTurn, DISPATCH_UI_TIMEOUT_MS);
-			void resolveApprovalByVoice(callId, approved, myTurn);
+			void resolveApprovalByVoice(callId, approved, approvalId, myTurn);
 			return;
 		}
 
@@ -2372,7 +2412,8 @@ export function createVoiceDemo(
 					summary: approvalSummary(request, modelSummary),
 					request,
 					title,
-					createdAt: Date.now()
+					createdAt: Date.now(),
+					userTurnAtCreate: userTurnSeq
 				};
 				pendingApprovals = [...pendingApprovals, approval];
 				timeline?.add({
@@ -2383,7 +2424,7 @@ export function createVoiceDemo(
 				});
 				void completeToolCall(
 					callId,
-					`Waiting for the user's approval on screen: "${approval.summary}". It has NOT been done. Tell them in one short sentence what you are about to do and ask them to confirm. If they answer yes or no out loud, call resolve_approval.`,
+					`Waiting for the user's approval on screen (approval_id ${approval.id}): "${approval.summary}". It has NOT been done. Tell them in one short sentence what you are about to do, ask them to confirm, then stop and let them answer. Only after the user themselves says yes or no out loud, call resolve_approval with that approval_id. Never call it in this same turn.`,
 					myTurn
 				);
 				return;
@@ -2419,6 +2460,28 @@ export function createVoiceDemo(
 				request = typeof args.request === 'string' ? args.request.trim() : '';
 			} catch {
 				request = '';
+			}
+			if (request && needsApproval(request, false, approvalsEnabled())) {
+				// Legacy blocking bridge: hold the call open until the user taps the card —
+				// approve() runs the bridge, decline() answers the call with a refusal.
+				outstandingToolCalls.delete(callId);
+				const approval: PendingApproval = {
+					id: `ap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+					callId,
+					summary: approvalSummary(request),
+					request,
+					createdAt: Date.now(),
+					userTurnAtCreate: userTurnSeq,
+					legacy: true
+				};
+				pendingApprovals = [...pendingApprovals, approval];
+				timeline?.add({
+					kind: 'approval',
+					approvalId: approval.id,
+					summary: approval.summary,
+					status: 'pending'
+				});
+				return;
 			}
 			beginHermesWorkingUi(myTurn);
 			if (!request) {
@@ -2536,6 +2599,7 @@ export function createVoiceDemo(
 				if (state !== 'listening') return;
 				// Server VAD commits + responds — never client commitAndRespond.
 				// Keep capture running while armed; only gate appends during thinking.
+				userTurnSeq += 1;
 				turnId += 1;
 				const stoppedTurn = turnId;
 				unpromptedReportStreak = 0;
@@ -3369,6 +3433,7 @@ export function createVoiceDemo(
 		// Hands-free: server VAD ends the utterance — never client commitAndRespond.
 		if (talkMode === 'handsfree') return;
 
+		userTurnSeq += 1;
 		turnId += 1;
 		const myTurn = turnId;
 		unpromptedReportStreak = 0;
@@ -3514,6 +3579,7 @@ export function createVoiceDemo(
 			statusOverride = null;
 			pulse(8);
 
+			userTurnSeq += 1;
 			client?.sendUserText(text);
 			transcript?.noteUserText(text);
 			timeline?.add({ kind: 'user', text, via: 'text' });

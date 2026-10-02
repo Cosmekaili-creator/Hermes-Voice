@@ -15,8 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Result cards and action approvals**: Hermes may attach an `hv-cards` block (events, emails, links, contacts, notes) that is shown on screen and never read aloud — validated server-side (`$lib/cards`), links restricted to http(s). Anything with a real-world effect (send, book, buy, delete, calendar changes…) now needs the user's go-ahead on an approval card or out loud (`resolve_approval` tool) before it is dispatched; triggered by the model's `requires_approval` flag _or_ a client-side side-effect backstop. Toggle: "Confirm actions before Hermes acts" (on by default).
 - **Control center + ambient mode**: the top-bar cluster moved into a pull-down control center (talk mode, language, provider, display, toggles, owner links). Ambient mode is a full-screen desk/car display with a large clock, next calendar event and unread count (new cached `POST /api/glance`, read-only prompt), ready tasks, and a large orb.
 
+- **Approval hardening (from independent review)**: a spoken approval (`resolve_approval`) is only honoured after a genuine user turn that came after the request, carries the `approval_id`, and can never be issued by the model in the same breath; the side-effect backstop covers request lead-ins ("could you…", "I need you to…", "let … know") and French/Spanish verbs; the legacy `ask_hermes` path is gated too.
+- Overlays (timeline, control center, ambient) make the background inert, close on Escape from anywhere, and return focus to the button that opened them.
+- The timeline is stored per binding (hashed scope) and wiped when the Lounge shows the locked gate; "Show my speech in the conversation" is now opt-in.
+
 ### Fixed
 
+- A task cancelled between the runner's read and its `running` transition could still run; the transition is now atomic and cancel always aborts.
+- Ambient glance uses a fresh Hermes session per run and caches failures for 2 minutes; every `hv-cards` block (including a truncated one) is stripped from spoken text.
+- The systemd unit sets `StateDirectory=hermes-voice` so the session secret survives restarts under `ProtectSystem=strict`; a too-short `SESSION_SECRET` now logs a warning.
 - `?k=` / `?token=` address-bar cleanup no longer calls `replaceState` before SvelteKit's router has started (the throw could abort the rest of the page mount).
 
 ### Security

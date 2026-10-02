@@ -44,3 +44,14 @@ describe('sanitizeCards', () => {
 		expect(card!.title).not.toContain('\u0000');
 	});
 });
+
+describe('extractCards — multiple / truncated blocks', () => {
+	it('strips every block and a trailing unterminated one', () => {
+		const out = extractCards(
+			'A.\n```hv-cards\n[{"type":"note","title":"one"}]\n```\nB.\n```hv-cards\n[{"type":"note","title":"two"}]\n```\nC.\n```hv-cards\n[{"type":"note","ti'
+		);
+		expect(out.text).not.toContain('hv-cards');
+		expect(out.text).not.toContain('{');
+		expect(out.cards.map((c) => c.title)).toEqual(['one', 'two']);
+	});
+});
