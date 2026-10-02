@@ -1,5 +1,5 @@
 import { error, json, type RequestHandler } from '@sveltejs/kit';
-import { appendFile, mkdir, stat } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { requireOwner } from '$lib/server/auth';
 import { assertSameOrigin } from '$lib/server/origin.server';
@@ -112,5 +112,8 @@ export const POST: RequestHandler = async (event) => {
 		return json({ ok: false, code: 'debug_file_full' }, { status: 507 });
 	}
 	await appendFile(file, payload, { encoding: 'utf8', mode: 0o600 });
+	// `mode` only applies on creation — tighten a pre-existing sink (from older versions) too.
+	await chmod(dir, 0o700).catch(() => {});
+	await chmod(file, 0o600).catch(() => {});
 	return json({ ok: true, wrote: lines.length });
 };

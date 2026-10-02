@@ -157,6 +157,8 @@ export const es = {
 
 	'health.title': 'Salud del propietario',
 	'health.voice': 'Acceso de voz',
+	'health.weakKey':
+		'Se usa una clave de voz débil — cámbiala por una clave generada (al menos 24 caracteres aleatorios).',
 	'health.xai': 'Mint xAI',
 	'health.openai': 'Mint OpenAI',
 	'health.hermes': 'Hermes',

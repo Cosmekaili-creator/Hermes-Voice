@@ -99,9 +99,9 @@ export function isValidSetupToken(provided: string | null): boolean {
 export function checkSetupToken(event: RequestEvent, provided: string | null): boolean {
 	if (!provided) return false;
 	if (!effectiveSetupToken()) return false;
-	if (isAuthLockedOut(event)) return false;
+	if (isAuthLockedOut(event, 'key')) return false;
 	if (isValidSetupToken(provided)) return true;
-	recordAuthFailure(event, `setup:${provided}`);
+	recordAuthFailure(event, `setup:${provided}`, 'key');
 	return false;
 }
 
@@ -114,9 +114,9 @@ export function isValidSetupCookie(event: RequestEvent): boolean {
 		event.cookies.get(SETUP_COOKIE_HOST) ??
 		event.cookies.get(SETUP_COOKIE_DEV);
 	if (!got) return false;
-	if (isAuthLockedOut(event)) return false;
+	if (isAuthLockedOut(event, 'cookie')) return false;
 	if (safeEqualStr(expected, got)) return true;
-	recordAuthFailure(event, `setupcookie:${got}`);
+	recordAuthFailure(event, `setup:${got}`, 'cookie');
 	clearSetupCookie(event.cookies);
 	return false;
 }

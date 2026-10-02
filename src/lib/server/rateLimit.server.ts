@@ -1,4 +1,4 @@
-import { type RequestEvent } from '@sveltejs/kit';
+import { error, type RequestEvent } from '@sveltejs/kit';
 import { isIP } from 'node:net';
 
 type Bucket = {
@@ -11,21 +11,55 @@ const buckets = new Map<string, Bucket>();
 /** Hard ceiling on tracked buckets — the store must never grow without bound. */
 export const MAX_BUCKETS = 10_000;
 
+function stripMapped(ip: string): string {
+	return ip.replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/i, '');
+}
+
+function ipv4ToInt(ip: string): number | null {
+	const parts = ip.split('.');
+	if (parts.length !== 4) return null;
+	let n = 0;
+	for (const p of parts) {
+		const o = Number(p);
+		if (!Number.isInteger(o) || o < 0 || o > 255) return null;
+		n = n * 256 + o;
+	}
+	return n;
+}
+
+/** `a.b.c.d` or `a.b.c.d/nn` (IPv4), or an exact IPv6 address. */
+function matchesTrustedEntry(ip: string, entry: string): boolean {
+	const [base, bitsRaw] = entry.split('/');
+	if (!base) return false;
+	if (isIP(base) === 6) return bitsRaw === undefined && base.toLowerCase() === ip.toLowerCase();
+	const target = ipv4ToInt(ip);
+	const net = ipv4ToInt(base);
+	if (target === null || net === null) return false;
+	const bits = bitsRaw === undefined ? 32 : Number(bitsRaw);
+	if (!Number.isInteger(bits) || bits < 0 || bits > 32) return false;
+	if (bits === 0) return true;
+	const size = 2 ** (32 - bits);
+	return Math.floor(target / size) === Math.floor(net / size);
+}
+
+/**
+ * A peer whose `X-Forwarded-For` we believe: loopback always (the documented
+ * nginx/Caddy-on-the-same-host deployment), plus anything listed in
+ * `TRUSTED_PROXY_IPS` (comma-separated IPv4 / IPv4 CIDR / exact IPv6) — e.g. a Docker
+ * bridge gateway. Private ranges are NOT trusted by default: a LAN or port-forwarded peer
+ * that isn't a header-appending proxy would otherwise pick its own bucket.
+ */
 function isTrustedProxyPeer(ip: string): boolean {
-	const host = ip.replace(/^::ffff:/i, '');
-	if (host === '::1' || host === 'localhost') return true;
-	if (isIP(host) === 4) {
-		const [a, b] = host.split('.').map(Number) as [number, number];
-		if (a === 127 || a === 10) return true;
-		if (a === 172 && b >= 16 && b <= 31) return true;
-		if (a === 192 && b === 168) return true;
-		return false;
-	}
-	if (isIP(host) === 6) {
-		const lower = host.toLowerCase();
-		return lower.startsWith('fc') || lower.startsWith('fd');
-	}
-	return false;
+	const host = stripMapped(ip);
+	if (host === '::1') return true;
+	if (isIP(host) === 4 && host.startsWith('127.')) return true;
+	const extra = process.env.TRUSTED_PROXY_IPS?.trim();
+	if (!extra) return false;
+	return extra
+		.split(',')
+		.map((e) => e.trim())
+		.filter(Boolean)
+		.some((entry) => matchesTrustedEntry(host, entry));
 }
 
 function socketAddress(event: RequestEvent): string | null {
@@ -41,12 +75,12 @@ function socketAddress(event: RequestEvent): string | null {
  *
  * - `ADDRESS_HEADER` set: adapter-node already resolved the address from the configured
  *   header (with `XFF_DEPTH`) — use it verbatim.
- * - Direct connection from a public peer: the socket address is authoritative; any
- *   `X-Forwarded-For` / `X-Real-IP` the client sent is ignored.
- * - Peer is loopback / private (a local reverse proxy): take the RIGHT-most
- *   `X-Forwarded-For` entry — the one the proxy itself appended (nginx
- *   `$proxy_add_x_forwarded_for` keeps the client's own spoofable entries on the left).
- *   Falls back to `X-Real-IP`, then the peer address.
+ * - Peer is not a trusted proxy (see isTrustedProxyPeer): the socket address is
+ *   authoritative; any `X-Forwarded-For` / `X-Real-IP` the client sent is ignored.
+ * - Peer is a trusted proxy: take the RIGHT-most `X-Forwarded-For` entry — the one the
+ *   proxy itself appended (nginx `$proxy_add_x_forwarded_for` keeps the client's own
+ *   spoofable entries on the left). No XFF at all: the peer address (all clients then
+ *   share one bucket — configure the proxy to send XFF).
  */
 export function clientIp(event: RequestEvent): string {
 	const peer = socketAddress(event);
@@ -62,8 +96,6 @@ export function clientIp(event: RequestEvent): string {
 		const last = parts[parts.length - 1];
 		if (last) return last;
 	}
-	const real = event.request.headers.get('x-real-ip')?.trim();
-	if (real) return real;
 	return peer ?? 'unknown';
 }
 
@@ -82,30 +114,35 @@ function expandIpv6(ip: string): string[] | null {
  * owns a whole /64, so per-address buckets would let one client rotate through 2^64
  * fresh buckets. IPv4-mapped IPv6 is unwrapped to plain IPv4.
  */
-export function ipBucketKey(ip: string): string {
-	const host = ip.replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/i, '');
+export function ipBucketKey(ip: string, prefixGroups = 4): string {
+	const host = stripMapped(ip);
 	if (isIP(host) !== 6) return host;
 	const groups = expandIpv6(host.toLowerCase().split('%')[0]!);
 	if (!groups) return host;
 	return `${groups
-		.slice(0, 4)
+		.slice(0, prefixGroups)
 		.map((g) => g.replace(/^0+(?=.)/, ''))
-		.join(':')}::/64`;
+		.join(':')}::/${prefixGroups * 16}`;
 }
+
+/** Lockout buckets are what stop brute force — evict them only as a last resort. */
+const PROTECTED_PREFIX = 'authfail:';
 
 function pruneBuckets(now: number): void {
 	if (buckets.size < MAX_BUCKETS) return;
 	for (const [k, b] of buckets) {
 		if (b.resetAt <= now) buckets.delete(k);
 	}
-	// Still full of live buckets: evict oldest-inserted (Map preserves insertion order).
-	const excess = buckets.size - MAX_BUCKETS + 1;
-	if (excess > 0) {
-		let removed = 0;
+	// Still full of live buckets: evict oldest-inserted (Map preserves insertion order),
+	// ordinary buckets first so a flood can't flush failed-credential lockouts.
+	let excess = buckets.size - MAX_BUCKETS + 1;
+	for (const pass of [false, true]) {
+		if (excess <= 0) break;
 		for (const k of buckets.keys()) {
-			if (removed >= excess) break;
+			if (excess <= 0) break;
+			if (!pass && k.startsWith(PROTECTED_PREFIX)) continue;
 			buckets.delete(k);
-			removed += 1;
+			excess -= 1;
 		}
 	}
 }
@@ -147,36 +184,76 @@ export function isRateLimited(key: string, limit: number): boolean {
 }
 
 /**
- * Failed-credential budget per client address, shared by every credential check (voice
- * key / Lounge cookie / setup token). Checked BEFORE a credential is evaluated, so once
- * exhausted every guess from that address answers "no" without being tested — no oracle.
+ * Failed-credential budgets per client address. Checked BEFORE a credential is evaluated,
+ * so once exhausted every guess from that address answers "no" without being tested.
+ *
+ * Two independent kinds, so one can't be used to lock out the other:
+ * - `key`: raw voice keys and setup tokens (`?k=`, body, headers). A cross-site page can
+ *   make a victim's browser send these (e.g. `<img src="…?k=x">`), so a key lockout must
+ *   never block an already-signed-in user.
+ * - `cookie`: Lounge / setup session cookies. Another site can't set these for us
+ *   (`__Host-` prefix), so only the browser holding them can burn this budget. Still
+ *   counted: a cookie is an HMAC of the voice key, i.e. an offline-computable key guess.
+ *
+ * IPv6 additionally has a coarser /48 tier so a holder of many /64s can't multiply
+ * their budget.
  */
-export const FAILED_AUTH = { limit: 20, windowMs: 15 * 60_000 } as const;
+export type AuthFailureKind = 'key' | 'cookie';
 
-function failedAuthKey(event: RequestEvent): string {
-	return `authfail:ip:${ipBucketKey(clientIp(event))}`;
+export const FAILED_AUTH = { limit: 20, windowMs: 15 * 60_000 } as const;
+export const FAILED_AUTH_V6_48 = { limit: 200, windowMs: 15 * 60_000 } as const;
+
+function failedAuthKeys(
+	event: RequestEvent,
+	kind: AuthFailureKind
+): Array<{ key: string; limit: number; windowMs: number }> {
+	const ip = clientIp(event);
+	const keys: Array<{ key: string; limit: number; windowMs: number }> = [
+		{
+			key: `${PROTECTED_PREFIX}${kind}:${ipBucketKey(ip)}`,
+			limit: FAILED_AUTH.limit,
+			windowMs: FAILED_AUTH.windowMs
+		}
+	];
+	if (isIP(stripMapped(ip)) === 6) {
+		keys.push({
+			key: `${PROTECTED_PREFIX}${kind}:${ipBucketKey(ip, 3)}`,
+			limit: FAILED_AUTH_V6_48.limit,
+			windowMs: FAILED_AUTH_V6_48.windowMs
+		});
+	}
+	return keys;
 }
 
-export function isAuthLockedOut(event: RequestEvent): boolean {
-	return isRateLimited(failedAuthKey(event), FAILED_AUTH.limit);
+export function isAuthLockedOut(event: RequestEvent, kind: AuthFailureKind = 'key'): boolean {
+	return failedAuthKeys(event, kind).some((b) => isRateLimited(b.key, b.limit));
 }
 
 /** Per-request dedupe: hooks + route both resolve the same credential on one request. */
 const countedFailures = new WeakMap<Request, Set<string>>();
 
 /** Count one failed credential attempt — at most once per (request, credential). */
-export function recordAuthFailure(event: RequestEvent, credential: string): void {
+export function recordAuthFailure(
+	event: RequestEvent,
+	credential: string,
+	kind: AuthFailureKind = 'key'
+): void {
 	let seen = countedFailures.get(event.request);
 	if (!seen) {
 		seen = new Set();
 		countedFailures.set(event.request, seen);
 	}
-	if (seen.has(credential)) return;
-	seen.add(credential);
-	takeRateLimit(failedAuthKey(event), FAILED_AUTH.limit, FAILED_AUTH.windowMs);
+	const id = `${kind}:${credential}`;
+	if (seen.has(id)) return;
+	seen.add(id);
+	for (const b of failedAuthKeys(event, kind)) takeRateLimit(b.key, b.limit, b.windowMs);
 }
 
-/** Throws a Response so Retry-After is preserved (Kit error() drops custom headers). */
+/**
+ * Throws a 429. SvelteKit turns a thrown `Response` from an endpoint into a 500, and its
+ * `error()` drops custom headers — so the Retry-After value rides on `event.locals` and
+ * `hooks.server.ts` copies it onto the 429 response.
+ */
 export function enforceRateLimit(
 	event: RequestEvent,
 	bucket: string,
@@ -188,13 +265,8 @@ export function enforceRateLimit(
 	const key = principalId ? `${bucket}:p:${principalId}:${ip}` : `${bucket}:ip:${ip}`;
 	const result = takeRateLimit(key, limit, windowMs);
 	if (!result.ok) {
-		throw new Response(`Rate limited; retry after ${result.retryAfterSec}s`, {
-			status: 429,
-			headers: {
-				'Content-Type': 'text/plain; charset=utf-8',
-				'Retry-After': String(result.retryAfterSec)
-			}
-		});
+		if (event.locals) event.locals.retryAfterSec = result.retryAfterSec;
+		error(429, `Rate limited; retry after ${result.retryAfterSec}s`);
 	}
 }
 

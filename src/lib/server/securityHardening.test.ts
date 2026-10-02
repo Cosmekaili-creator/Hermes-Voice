@@ -5,6 +5,7 @@ import {
 	bucketCount,
 	clientIp,
 	FAILED_AUTH,
+	FAILED_AUTH_V6_48,
 	ipBucketKey,
 	isAuthLockedOut,
 	MAX_BUCKETS,
@@ -84,11 +85,37 @@ describe('clientIp (H1 — no spoofable client headers)', () => {
 		expect(clientIp(a)).toBe(clientIp(b));
 	});
 
-	it('falls back to X-Real-IP, then the peer, behind a local proxy', () => {
+	it('never trusts X-Real-IP; a trusted proxy without XFF maps to the peer', () => {
 		expect(clientIp(makeEvent({ peer: '::1', headers: { 'x-real-ip': '198.51.100.11' } }))).toBe(
-			'198.51.100.11'
+			'::1'
 		);
-		expect(clientIp(makeEvent({ peer: '10.0.0.5' }))).toBe('10.0.0.5');
+	});
+
+	it('does NOT trust private-range peers by default (LAN / port-forward exposure)', () => {
+		const ev = makeEvent({ peer: '10.0.0.5', headers: { 'x-forwarded-for': '10.9.0.77' } });
+		expect(clientIp(ev)).toBe('10.0.0.5');
+		const v6 = makeEvent({ peer: 'fd00::5', headers: { 'x-forwarded-for': '2001:db8::9' } });
+		expect(clientIp(v6)).toBe('fd00::5');
+	});
+
+	it('trusts peers listed in TRUSTED_PROXY_IPS (IPv4 CIDR / exact)', () => {
+		process.env.TRUSTED_PROXY_IPS = '172.17.0.0/16, fd00::1';
+		try {
+			const docker = makeEvent({
+				peer: '172.17.0.1',
+				headers: { 'x-forwarded-for': 'x, 198.51.100.40' }
+			});
+			expect(clientIp(docker)).toBe('198.51.100.40');
+			const v6 = makeEvent({ peer: 'fd00::1', headers: { 'x-forwarded-for': '198.51.100.41' } });
+			expect(clientIp(v6)).toBe('198.51.100.41');
+			const other = makeEvent({
+				peer: '172.18.0.1',
+				headers: { 'x-forwarded-for': '198.51.100.42' }
+			});
+			expect(clientIp(other)).toBe('172.18.0.1');
+		} finally {
+			delete process.env.TRUSTED_PROXY_IPS;
+		}
 	});
 
 	it('trusts the adapter-resolved address verbatim when ADDRESS_HEADER is configured', () => {
@@ -108,6 +135,16 @@ describe('ipBucketKey', () => {
 	});
 });
 
+describe('IPv6 /48 tier', () => {
+	it('many distinct /64s inside one /48 still hit the coarser lockout', () => {
+		const base = `2001:db8:${((Math.random() * 0xfff0) | 0).toString(16)}`;
+		for (let i = 0; i < FAILED_AUTH_V6_48.limit; i++) {
+			recordAuthFailure(makeEvent({ peer: `${base}:${i.toString(16)}::1` }), `g${i}`);
+		}
+		expect(isAuthLockedOut(makeEvent({ peer: `${base}:ffff::1` }))).toBe(true);
+	});
+});
+
 describe('rate-limit store cap (M3)', () => {
 	it('never grows past MAX_BUCKETS even when flooded with live keys', () => {
 		const tag = Math.random().toString(36).slice(2);
@@ -115,6 +152,15 @@ describe('rate-limit store cap (M3)', () => {
 			takeRateLimit(`flood:${tag}:${i}`, 5, 60 * 60_000);
 		}
 		expect(bucketCount()).toBeLessThanOrEqual(MAX_BUCKETS);
+	});
+
+	it('a flood of ordinary buckets does not flush an active lockout', () => {
+		const peer = uniquePublicIp();
+		for (let i = 0; i < FAILED_AUTH.limit; i++) recordAuthFailure(makeEvent({ peer }), `f${i}`);
+		expect(isAuthLockedOut(makeEvent({ peer }))).toBe(true);
+		const tag = Math.random().toString(36).slice(2);
+		for (let i = 0; i < MAX_BUCKETS + 50; i++) takeRateLimit(`flood2:${tag}:${i}`, 5, 60 * 60_000);
+		expect(isAuthLockedOut(makeEvent({ peer }))).toBe(true);
 	});
 });
 
@@ -126,6 +172,8 @@ describe('failed-credential lockout (H2)', () => {
 			recordAuthFailure(makeEvent({ peer }), `guess-${i}`);
 		}
 		expect(isAuthLockedOut(makeEvent({ peer }))).toBe(true);
+		// Key failures never lock the cookie kind.
+		expect(isAuthLockedOut(makeEvent({ peer }), 'cookie')).toBe(false);
 		// Other addresses unaffected.
 		expect(isAuthLockedOut(makeEvent({ peer: uniquePublicIp() }))).toBe(false);
 	});
@@ -145,6 +193,60 @@ describe('failed-credential lockout (H2)', () => {
 		});
 		afterEach(() => {
 			delete process.env.VOICE_URL_KEY;
+		});
+
+		it('a raw-key lockout does NOT sign out a browser holding a valid cookie (verifier #1)', async () => {
+			const peer = uniquePublicIp();
+			for (let i = 0; i < FAILED_AUTH.limit; i++) {
+				await resolveBinding(makeEvent({ peer, path: `/health?k=x${i}` }));
+			}
+			expect(isAuthLockedOut(makeEvent({ peer }))).toBe(true);
+			const withCookie = await resolveBinding(
+				makeEvent({ peer, path: '/?k=bad', cookies: { '__Host-hv': derivedSessionToken(KEY) } })
+			);
+			expect(withCookie?.id).toBe('env');
+		});
+
+		it('cross-site subresource ?k= (e.g. <img>) is ignored: not evaluated, not counted', async () => {
+			const peer = uniquePublicIp();
+			for (let i = 0; i < FAILED_AUTH.limit + 5; i++) {
+				const b = await resolveBinding(
+					makeEvent({
+						peer,
+						path: `/health?k=x${i}`,
+						headers: { 'sec-fetch-site': 'cross-site', 'sec-fetch-dest': 'image' }
+					})
+				);
+				expect(b).toBeNull();
+			}
+			expect(isAuthLockedOut(makeEvent({ peer }))).toBe(false);
+			// …while a cross-site top-level navigation with the right key still unlocks.
+			const nav = await resolveBinding(
+				makeEvent({
+					peer,
+					path: `/?k=${KEY}`,
+					headers: { 'sec-fetch-site': 'cross-site', 'sec-fetch-dest': 'document' }
+				})
+			);
+			expect(nav?.id).toBe('env');
+		});
+
+		it('a live SETUP_TOKEN sent as Bearer is not counted as a failed voice key (verifier #4)', async () => {
+			process.env.SETUP_TOKEN = 'setup-token-for-tests-1234567890';
+			try {
+				const peer = uniquePublicIp();
+				for (let i = 0; i < FAILED_AUTH.limit + 2; i++) {
+					await resolveBinding(
+						makeEvent({
+							peer,
+							headers: { authorization: 'Bearer setup-token-for-tests-1234567890' }
+						})
+					);
+				}
+				expect(isAuthLockedOut(makeEvent({ peer }))).toBe(false);
+			} finally {
+				delete process.env.SETUP_TOKEN;
+			}
 		});
 
 		it('wrong keys count as failures; once locked, even the RIGHT key is refused', async () => {
@@ -207,6 +309,8 @@ describe('isStrongVoiceKey (H3)', () => {
 		expect(isStrongVoiceKey('short-key-123')).toBe(false);
 		expect(isStrongVoiceKey('a'.repeat(40))).toBe(false);
 		expect(isStrongVoiceKey('abababababababababababababab')).toBe(false);
+		expect(isStrongVoiceKey('aaaaaaaaaaaaaaaaaaabcdef')).toBe(false);
+		expect(isStrongVoiceKey('password1234password1234')).toBe(false);
 	});
 	it('accepts generated-style keys', () => {
 		expect(isStrongVoiceKey('3f9a1c0be24d7e65a8b1c3d5e7f90a2b4c6d8e0f1a2b3c4d')).toBe(true);
@@ -226,6 +330,15 @@ describe('Hermes key binding to its base (M1)', () => {
 		expect(sameHermesBase('http://127.0.0.1:8642', 'http://127.0.0.1:8643')).toBe(false);
 		expect(sameHermesBase('http://127.0.0.1:8642', 'https://127.0.0.1:8642')).toBe(false);
 		expect(sameHermesBase('http://127.0.0.1:8642', null)).toBe(false);
+	});
+
+	it('an unset stored base means the default (verifier #3): default base + stored key is allowed', async () => {
+		process.env.HERMES_API_KEY = 'stored-secret';
+		const result = await probeHermes({ hermesApiBase: 'http://127.0.0.1:8642/' });
+		// Nothing listens there in tests — what matters is it got past the key-binding check.
+		expect(result).not.toEqual({ ok: false, code: 'hermes_key_required' });
+		const moved = await probeHermes({ hermesApiBase: 'http://10.1.2.3:8642' });
+		expect(moved).toEqual({ ok: false, code: 'hermes_key_required' });
 	});
 
 	it('probeHermes never sends the stored env key to a caller-supplied base', async () => {

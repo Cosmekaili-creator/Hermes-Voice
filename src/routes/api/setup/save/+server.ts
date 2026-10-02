@@ -13,6 +13,7 @@ import {
 } from '$lib/server/setupMode.server';
 import { clearSessionCookie, isStrongVoiceKey } from '$lib/server/auth';
 import {
+	defaultHermesBase,
 	ensureBindingsImported,
 	findOwner,
 	isMultiUserMode,
@@ -101,7 +102,11 @@ export const POST: RequestHandler = async (event) => {
 		return json({ ok: false, code: baseCheck.code }, { status: 400 });
 	}
 	// Rotation carrying over the stored Hermes key must not move it to a new base.
-	if (rotation && !hermesApiKey && !sameHermesBase(baseCheck.base, existing('HERMES_API_BASE'))) {
+	if (
+		rotation &&
+		!hermesApiKey &&
+		!sameHermesBase(baseCheck.base, existing('HERMES_API_BASE') || defaultHermesBase())
+	) {
 		return json({ ok: false, code: 'hermes_key_required' }, { status: 400 });
 	}
 

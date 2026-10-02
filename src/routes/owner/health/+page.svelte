@@ -10,7 +10,7 @@
 
 	const locale = $derived((browser ? getLocale() : page.data.locale) as Locale);
 
-	type Check = { ok: boolean; code?: string };
+	type Check = { ok: boolean; code?: string; weakKey?: boolean };
 	type UserHealth = {
 		id: string;
 		label: string;
@@ -18,6 +18,7 @@
 		enabled: boolean;
 		hermesApiBase: string;
 		hermes: Check;
+		weakKey?: boolean;
 	};
 
 	let loading = $state(false);
@@ -28,6 +29,10 @@
 	let hermes = $state<Check | null>(null);
 	let users = $state<UserHealth[]>([]);
 	let micHint = $state<'unknown' | 'ok' | 'denied'>('unknown');
+
+	const weakKeyLabels = $derived(
+		multiUser ? users.filter((u) => u.weakKey).map((u) => u.label) : voice?.weakKey ? ['—'] : []
+	);
 
 	async function refresh() {
 		if (!data.authenticated) return;
@@ -102,6 +107,13 @@
 				<a class="link" href={resolve('/owner/users')}>{t('health.linkUsers', locale)}</a>
 				<a class="link" href={resolve('/setup')}>{t('health.backSetup', locale)}</a>
 			</div>
+
+			{#if weakKeyLabels.length > 0}
+				<p class="weak-key" role="status">
+					{t('health.weakKey', locale)}
+					{#if multiUser}<span class="weak-key__who">{weakKeyLabels.join(', ')}</span>{/if}
+				</p>
+			{/if}
 
 			<ul class="checks">
 				{#if !multiUser}
@@ -317,5 +329,20 @@
 		color: var(--accent);
 		text-decoration: none;
 		font-size: 0.92rem;
+	}
+	.weak-key {
+		margin: 0 0 1rem;
+		padding: 0.75rem 0.9rem;
+		border: 1px solid #e7b75e;
+		border-radius: 0.8rem;
+		color: #ffd98a;
+		font-size: 0.88rem;
+		line-height: 1.4;
+	}
+
+	.weak-key__who {
+		display: block;
+		margin-top: 0.25rem;
+		color: #e8f7f8;
 	}
 </style>

@@ -5,6 +5,7 @@ import {
 	isMultiUserMode,
 	safeEqualStr,
 	syntheticEnvBinding,
+	readEnvTrimmed,
 	type Binding
 } from '$lib/server/bindings.server';
 import { isAuthLockedOut, recordAuthFailure } from '$lib/server/rateLimit.server';
@@ -42,8 +43,22 @@ export const MIN_VOICE_KEY_LENGTH = 24;
 export function isStrongVoiceKey(key: string): boolean {
 	const k = key.trim();
 	if (k.length < MIN_VOICE_KEY_LENGTH) return false;
-	// Reject trivially low-entropy keys (e.g. one repeated character).
-	return new Set(k).size >= 6;
+	const counts = new Map<string, number>();
+	for (const ch of k) counts.set(ch, (counts.get(ch) ?? 0) + 1);
+	if (counts.size < 8) return false;
+	// A key that is one shorter unit repeated ("password1234password1234") is only as
+	// strong as that unit.
+	for (let unit = 1; unit <= k.length / 2; unit++) {
+		if (k.length % unit === 0 && k.slice(0, unit).repeat(k.length / unit) === k) return false;
+	}
+	// Shannon estimate over the key's own character distribution — catches long but
+	// low-variety keys ("aaaaaaaaaaaaaaaaaaabcdef"). 80 bits ≈ a 20-char random hex string.
+	let bits = 0;
+	for (const n of counts.values()) {
+		const p = n / k.length;
+		bits -= n * Math.log2(p);
+	}
+	return bits >= 80;
 }
 
 /** Derived session token — cookie never stores the raw voice key. */
@@ -72,7 +87,31 @@ export function extractVoiceKey(event: RequestEvent, body?: unknown): string | n
 		if (bearer) return bearer;
 	}
 
+	if (isCrossSiteSubresource(event)) return null;
 	return nonEmptyString(event.url.searchParams.get('k'));
+}
+
+/**
+ * A cross-site `<img>`/`<script>`/fetch pointed at us. Any page on the web can make a
+ * visitor's browser send `?k=…` this way, so such a key is ignored outright — neither
+ * evaluated nor counted — instead of letting a third-party page burn that visitor's
+ * failed-key budget. Top-level navigations (a `?k=` link clicked in mail/chat) still work.
+ */
+function isCrossSiteSubresource(event: RequestEvent): boolean {
+	const h = event.request.headers;
+	if (h.get('sec-fetch-site') !== 'cross-site') return false;
+	const dest = h.get('sec-fetch-dest');
+	return dest !== null && dest !== 'document';
+}
+
+/**
+ * During bootstrap a script may send SETUP_TOKEN as `Authorization: Bearer`, which the
+ * Lounge also reads as a voice key — don't count the setup token as a failed voice key.
+ */
+function isLiveSetupToken(raw: string): boolean {
+	if (readEnvTrimmed('SETUP_COMPLETE') === '1') return false;
+	const token = readEnvTrimmed('SETUP_TOKEN');
+	return token !== null && safeEqualStr(token, raw);
 }
 
 /**
@@ -82,25 +121,34 @@ export function extractVoiceKey(event: RequestEvent, body?: unknown): string | n
  */
 export async function resolveBinding(event: RequestEvent, body?: unknown): Promise<Binding | null> {
 	const raw = extractVoiceKey(event, body);
-	const cookie = raw ? null : readLoungeCookie(event);
+	const cookie = readLoungeCookie(event);
 	// Anonymous request — nothing to verify, nothing to count.
 	if (!raw && !cookie) return null;
 
-	// Failed-credential lockout: once this address has burned its budget, every credential
-	// answers "no" WITHOUT being evaluated, so the lockout window yields no oracle.
-	if (isAuthLockedOut(event)) return null;
+	// Raw key first (it may be a deliberate switch to another binding), then the session
+	// cookie. Each has its own failed-attempt budget (see AuthFailureKind): once one is
+	// exhausted for this address, that kind answers "no" WITHOUT being evaluated (no
+	// oracle), while the other kind keeps working — so a lockout of raw keys forced by a
+	// third-party page never signs out a browser holding a valid cookie.
+	if (raw && !isAuthLockedOut(event, 'key')) {
+		const fromKey = await matchCredential(raw, null);
+		// Store unavailable (no key configured yet / bindings unreadable): fail closed, but
+		// it isn't the caller's fault — don't count it.
+		if (fromKey === 'unavailable') return null;
+		if (fromKey) return fromKey;
+		if (!isLiveSetupToken(raw)) recordAuthFailure(event, raw, 'key');
+	}
 
-	const binding = await matchCredential(raw, cookie);
-	// Credential store unavailable (no key configured yet / bindings unreadable): fail
-	// closed, but it isn't the caller's fault — don't count it or drop their cookie.
-	if (binding === 'unavailable') return null;
-	if (!binding) {
-		recordAuthFailure(event, raw ? `k:${raw}` : `c:${cookie}`);
+	if (cookie && !isAuthLockedOut(event, 'cookie')) {
+		const fromCookie = await matchCredential(null, cookie);
+		if (fromCookie === 'unavailable') return null;
+		if (fromCookie) return fromCookie;
+		recordAuthFailure(event, cookie, 'cookie');
 		// A stale/invalid Lounge cookie (e.g. after key rotation) would otherwise be
 		// re-counted on every request the browser makes — drop it once.
-		if (cookie) clearSessionCookie(event.cookies);
+		clearSessionCookie(event.cookies);
 	}
-	return binding;
+	return null;
 }
 
 async function matchCredential(

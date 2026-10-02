@@ -3,6 +3,7 @@ import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { probeMint as probeOpenAIMint } from '$lib/providers/openai/mint.server';
 import { probeMint as probeXaiMint } from '$lib/providers/xai/mint.server';
+import { defaultHermesBase } from '$lib/server/bindings.server';
 import { isAllowedHermesHost } from '$lib/server/hermesAllowlist';
 
 export { isAllowedHermesHost } from '$lib/server/hermesAllowlist';
@@ -135,7 +136,9 @@ export async function probeHermes(opts: {
 	hermesApiBase?: string | null;
 	hermesApiKey?: string | null;
 }): Promise<ProbeResult> {
-	const storedBase = nonEmpty(process.env.HERMES_API_BASE) ?? nonEmpty(env.HERMES_API_BASE);
+	// Unset means the app-wide default (same as syntheticEnvBinding / the wizard).
+	const storedBase =
+		nonEmpty(process.env.HERMES_API_BASE) ?? nonEmpty(env.HERMES_API_BASE) ?? defaultHermesBase();
 	const requestedBase = nonEmpty(opts.hermesApiBase) ?? storedBase;
 	const target = await resolveHermesFetchTarget(requestedBase);
 	if (!target.ok) {

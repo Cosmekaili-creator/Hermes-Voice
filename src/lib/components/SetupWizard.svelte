@@ -37,7 +37,28 @@
 
 	onMount(() => {
 		if (!origin) origin = window.location.origin;
+		if (rotation) void prefillRotation();
 	});
+
+	/**
+	 * Rotation: start from the CURRENT Hermes base instead of the fresh-install default.
+	 * The server refuses to move a stored Hermes key to a different base without the key
+	 * being re-entered, so a stale default here would block a voice-key-only rotation.
+	 * The session key is left blank so the server keeps the existing one.
+	 */
+	async function prefillRotation() {
+		hermesSessionKey = '';
+		try {
+			const res = await fetch('/api/settings/current', { credentials: 'same-origin' });
+			if (!res.ok) return;
+			const data = (await res.json()) as { hermesApiBase?: unknown };
+			if (typeof data.hermesApiBase === 'string' && data.hermesApiBase) {
+				hermesApiBase = data.hermesApiBase;
+			}
+		} catch {
+			/* keep the default — the server will ask for the key if the base differs */
+		}
+	}
 
 	function errorMessage(code: string): string {
 		const key = `wizard.error.${code}` as MessageKey;

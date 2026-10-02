@@ -43,7 +43,9 @@ function isValidRole(raw: unknown): raw is TranscriptRole {
 function sanitizeTurnText(raw: unknown): string | null {
 	if (typeof raw !== 'string') return null;
 	let text = stripControlChars(raw);
-	text = text.replaceAll('<<<', '').replaceAll('>>>', '');
+	// Angle brackets become look-alike guillemets: no run of characters — however it is
+	// split or repeated — can reassemble a `<<<…>>>` quarantine marker.
+	text = text.replaceAll('<', '‹').replaceAll('>', '›');
 	text = text.replace(/\s+/g, ' ').trim();
 	if (!text) return null;
 	text = truncateOnWordBoundary(text, MAX_REVIEW_TURN_CHARS);
@@ -207,8 +209,15 @@ export function buildMemoryReviewPrompt(opts: {
 		turns = turns.slice(1);
 		rendered = renderTurns(turns);
 	}
-	if (rendered.length > budget) {
-		rendered = rendered.slice(0, budget);
+	if (rendered.length > budget && turns.length === 1) {
+		// Truncate the one remaining turn's TEXT and re-render, so the line stays a
+		// complete, correctly quoted turn instead of being cut mid-quote.
+		const only = turns[0]!;
+		const overhead = renderTurns([{ ...only, text: '' }]).length;
+		turns = [
+			{ ...only, text: truncateOnWordBoundary(only.text, Math.max(0, budget - overhead - 8)) }
+		];
+		rendered = renderTurns(turns);
 	}
 
 	return assemble(rendered);

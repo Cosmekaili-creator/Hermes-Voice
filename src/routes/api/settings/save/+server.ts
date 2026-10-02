@@ -2,6 +2,7 @@ import { json, type RequestHandler } from '@sveltejs/kit';
 import { normalizeVoiceId } from '$lib/persona/types';
 import { requireOwner } from '$lib/server/auth';
 import {
+	defaultHermesBase,
 	ensureBindingsImported,
 	findOwner,
 	isMultiUserMode,
@@ -106,7 +107,7 @@ export const POST: RequestHandler = async (event) => {
 		// A stored Hermes key is only ever sent to the base it was saved with: moving the
 		// base requires supplying the key in the same save (anti-exfiltration, see
 		// sameHermesBase). Multi-user: the owner row is authoritative.
-		let currentBase = readEnvTrimmed('HERMES_API_BASE');
+		let currentBase = readEnvTrimmed('HERMES_API_BASE') ?? defaultHermesBase();
 		if (isMultiUserMode()) {
 			const imported = await ensureBindingsImported();
 			if (imported.ok) currentBase = findOwner(imported.file.users)?.hermesApiBase ?? currentBase;

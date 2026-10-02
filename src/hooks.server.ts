@@ -42,5 +42,8 @@ export const handle: Handle = async ({ event, resolve }) => {
 				.replace('%hvAppName%', escapeHtmlAttr(persona.assistantName))
 	});
 	setSecurityHeaders(response);
+	if (response.status === 429 && event.locals.retryAfterSec) {
+		response.headers.set('Retry-After', String(event.locals.retryAfterSec));
+	}
 	return response;
 };

@@ -149,6 +149,8 @@ export const en = {
 
 	'health.title': 'Owner health',
 	'health.voice': 'Voice gate',
+	'health.weakKey':
+		'Weak voice key in use — rotate it to a generated key (at least 24 random characters).',
 	'health.xai': 'xAI mint',
 	'health.openai': 'OpenAI mint',
 	'health.hermes': 'Hermes',

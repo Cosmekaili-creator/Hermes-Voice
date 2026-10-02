@@ -158,6 +158,8 @@ export const fr = {
 
 	'health.title': 'Santé propriétaire',
 	'health.voice': 'Accès vocal',
+	'health.weakKey':
+		'Clé vocale faible utilisée — remplacez-la par une clé générée (au moins 24 caractères aléatoires).',
 	'health.xai': 'Mint xAI',
 	'health.openai': 'Mint OpenAI',
 	'health.hermes': 'Hermes',
