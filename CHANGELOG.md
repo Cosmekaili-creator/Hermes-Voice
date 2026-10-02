@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The orb is the controller**: tap to talk, hold for push-to-talk, swipe down to stop; the pill button is gone. Each state has its own motion (idle breathing, inward ripples while listening, an orbiting comet while working, spectrum bars while speaking, dim red on errors), and the spectrum is now mirrored and log-spaced so the ring is symmetric instead of lopsided.
+- **Conversation timeline**: a bottom sheet (swipe up or the list button) with the full conversation — both sides, every Hermes tool step, task outcomes, approvals and result cards — searchable, exportable as text, persisted per device and clearable. User speech appears when "Show my speech in the conversation" is on (uses the provider's input transcription).
+- **Task orbit**: background tasks orbit the ring as satellites (queued / running / ready / failed); tap one for its live progress feed, result cards, **Cancel** (new `POST /api/tasks/cancel`, binding-scoped, retires the task silently) or **Read it to me**.
+- **Result cards and action approvals**: Hermes may attach an `hv-cards` block (events, emails, links, contacts, notes) that is shown on screen and never read aloud — validated server-side (`$lib/cards`), links restricted to http(s). Anything with a real-world effect (send, book, buy, delete, calendar changes…) now needs the user's go-ahead on an approval card or out loud (`resolve_approval` tool) before it is dispatched; triggered by the model's `requires_approval` flag _or_ a client-side side-effect backstop. Toggle: "Confirm actions before Hermes acts" (on by default).
+- **Control center + ambient mode**: the top-bar cluster moved into a pull-down control center (talk mode, language, provider, display, toggles, owner links). Ambient mode is a full-screen desk/car display with a large clock, next calendar event and unread count (new cached `POST /api/glance`, read-only prompt), ready tasks, and a large orb.
+
+### Fixed
+
+- `?k=` / `?token=` address-bar cleanup no longer calls `replaceState` before SvelteKit's router has started (the throw could abort the rest of the page mount).
+
 ### Security
 
 - **Rate limits can no longer be bypassed with a spoofed `X-Forwarded-For`**: the client address now comes from the socket for public peers, and from the right-most (proxy-appended) `X-Forwarded-For` entry only when the peer is a local reverse proxy. `ADDRESS_HEADER`/`XFF_DEPTH` are honored for multi-proxy setups. IPv6 clients are bucketed per /64.

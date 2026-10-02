@@ -5,7 +5,11 @@
 
 Private **realtime voice** web UI for [Hermes Agent](https://github.com/NousResearch/hermes-agent) — a thin layer that talks through a realtime speech provider and delegates tool-heavy work to your Hermes instance.
 
-- **Lounge** — press-to-talk (default) or hands-free (server VAD), or type instead; mic + playback visualizer
+- **Lounge** — the orb is the control (tap to talk, hold for push-to-talk, swipe down to stop), hands-free (server VAD), or type instead; state-aware visualizer
+- **Conversation timeline** — searchable, exportable history of both sides, Hermes tool steps, tasks, approvals and result cards
+- **Task orbit** — background tasks as satellites around the orb with live progress, cancel, and "read it to me"
+- **Result cards & approvals** — on-screen cards for events/emails/links/contacts; real-world actions need an on-screen or spoken go-ahead first
+- **Control center & ambient mode** — pull-down controls; full-screen desk display with clock, next event, unread count
 - **Providers** — [xAI](https://x.ai/) realtime (default) or [OpenAI](https://openai.com/) Realtime via `VOICE_PROVIDER`
 - **Voice choice** — per-binding voice in multi-user mode (`/owner/users`), or a single owner-editable default in single-user mode; xAI's list is fetched live from its voice catalog, OpenAI's is a small curated list — never a mid-call hot-swap, and a bad pick degrades to the provider default instead of failing
 - **In-app settings** — an owner-only pill (provider) and gear icon in the Lounge open a settings modal for provider/keys/voice or the Hermes connection, no `/setup` round-trip needed for routine changes

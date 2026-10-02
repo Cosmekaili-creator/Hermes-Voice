@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
 	import { page } from '$app/state';
-	import { replaceState } from '$app/navigation';
+	import { afterNavigate, replaceState } from '$app/navigation';
 	import { getLocale, t, type Locale } from '$lib/i18n';
 	import LocaleSwitch from '$lib/components/LocaleSwitch.svelte';
 	import SetupWizard from '$lib/components/SetupWizard.svelte';
@@ -17,8 +17,13 @@
 	const unlocked = $derived(data.unlocked || unlockedLocal);
 
 	// Strip ?token= from the address bar after unlock (cosmetic; cookie carries session).
+	// replaceState must not run before the router is initialized (see routes/+page.svelte).
+	let routerReady = $state(false);
+	afterNavigate(() => {
+		queueMicrotask(() => (routerReady = true));
+	});
 	$effect(() => {
-		if (!browser) return;
+		if (!browser || !routerReady) return;
 		if (!unlocked && !data.justUnlocked) return;
 		if (!page.url.searchParams.has('token')) return;
 		const clean = new URL(page.url);

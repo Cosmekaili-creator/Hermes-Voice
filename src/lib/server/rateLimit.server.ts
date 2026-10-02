@@ -299,5 +299,7 @@ export const RATE = {
 	tasks: { limit: 30, windowMs: 60_000 },
 	// Owner-only caption debug sink (CAPTION_DEBUG=1) — the client flushes every ~400ms
 	// while captions animate, so this is sized for that, not for a human.
-	debugCaptions: { limit: 120, windowMs: 60_000 }
+	debugCaptions: { limit: 120, windowMs: 60_000 },
+	// Ambient-mode glance — cached server-side for 10 minutes, so this only bounds abuse.
+	glance: { limit: 6, windowMs: 60_000 }
 } as const;

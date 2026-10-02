@@ -115,3 +115,10 @@ systemd `ProtectSystem=strict` needs `ReadWritePaths=` on the `.env` parent for 
 | Tools                       | Hermes-only (`ask_hermes` via `session.update`)               | Hermes-only (same tool path)                                                                             |
 
 Capability matrix: `src/lib/providers/matrix.ts` (`CAPABILITY_MATRIX`). Thin probes: `POST /api/setup/test/xai` and `POST /api/setup/test/openai` (no OpenAI wizard step).
+
+## Lounge features (client-side)
+
+- **Timeline** is stored per browser in `localStorage` (`hermes-voice.timeline.v1`, last 300 entries) and can be cleared or exported from the sheet. "Show my speech in the conversation" turns on the provider's input transcription from the next connection.
+- **Action approvals** ("Confirm actions before … acts", on by default): `start_task` calls flagged `requires_approval` by the model, or whose brief starts a clause with a side-effect verb (send, book, buy, delete, schedule…), are held until the user approves on screen or out loud (`resolve_approval`). Approved tasks run in the background and report back like any other task. This is a client-side guard for the voice layer; Hermes' own tool permissions remain the real boundary.
+- **Result cards**: Hermes task replies may end with a fenced `hv-cards` JSON block; it is split off server-side, validated (types allow-listed, plain-text fields capped, http(s) links only) and never sent to the voice model.
+- **Ambient mode** calls `POST /api/glance` (owner's/binding's own Hermes, read-only prompt, cached 10 minutes, 6/min). No wake word: hands-free mode is the always-listening option.

@@ -163,6 +163,9 @@ export const POST: RequestHandler = async (event) => {
 				id: taskId,
 				outcome: claimedRecord.outcome
 			};
+			if (claimedRecord.cards && claimedRecord.cards.length > 0) {
+				payload.cards = claimedRecord.cards;
+			}
 			if (claimedRecord.outcome === 'done') {
 				payload.result = claimedRecord.result;
 			} else {

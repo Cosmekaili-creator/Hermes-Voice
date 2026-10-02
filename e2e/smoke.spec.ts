@@ -59,9 +59,10 @@ test.describe('lounge', () => {
 	}) => {
 		await page.goto('/?k=ci-test-key');
 
-		const talk = page.locator('.talk');
+		// The orb itself is the talk control (UI upgrade 1) — labelled for assistive tech.
+		const talk = page.locator('.orb');
 		await expect(talk).toBeVisible();
-		await expect(talk).toHaveText(/Press to talk/);
+		await expect(talk).toHaveAttribute('aria-label', /Press to talk/);
 
 		// Item 2: mic primer shown once per fresh browser context.
 		const primer = page.locator('.primer');
@@ -79,22 +80,22 @@ test.describe('lounge', () => {
 		// on a successful mint — this is precisely the case it exists for: a broken/absent
 		// provider key is exactly when settings are most needed. The e2e synthetic
 		// single-user binding (?k=ci-test-key) has role: 'owner', so it renders as a button.
-		const pill = page.locator('.provider-badge');
-		await expect(pill).toBeVisible();
-		await expect(pill).toHaveText(/xAI/);
-
-		// And the gear beside it (owner-only settings entry point for the Hermes section).
-		await expect(page.locator('.settings-gear')).toBeVisible();
-
 		// Item 3: captions don't add idle chrome.
 		await expect(page.locator('.captions')).toHaveCount(0);
 
-		// Item 8: touch target bump (1.8rem at a 16px root ⇒ >= 28px).
-		const minHeight = await page
+		// UI upgrade 5: provider/settings/mode/language live in the pull-down control center.
+		await page.locator('.control-handle').click();
+		const pill = page.locator('.provider-badge');
+		await expect(pill).toBeVisible();
+		await expect(pill).toHaveText(/xAI/);
+		await expect(page.locator('.settings-gear')).toBeVisible();
+
+		// Touch targets in the control center are at least 44px tall.
+		const height = await page
 			.locator('.talk-mode__btn')
 			.first()
-			.evaluate((el) => parseFloat(getComputedStyle(el).minHeight));
-		expect(minHeight).toBeGreaterThanOrEqual(28);
+			.evaluate((el) => el.getBoundingClientRect().height);
+		expect(height).toBeGreaterThanOrEqual(44);
 	});
 
 	test('mic primer does not reappear after dismissal in the same context', async ({ page }) => {
@@ -114,6 +115,7 @@ test.describe('settings modal (chunk A)', () => {
 
 	test('clicking the pill opens the modal on the provider section', async ({ page }) => {
 		await page.goto('/?k=ci-test-key');
+		await page.locator('.control-handle').click();
 		await page.locator('.provider-badge').click();
 		const dialog = page.locator('dialog.settings-modal');
 		await expect(dialog).toBeVisible();
@@ -122,6 +124,7 @@ test.describe('settings modal (chunk A)', () => {
 
 	test('clicking the gear opens the modal on the Hermes section', async ({ page }) => {
 		await page.goto('/?k=ci-test-key');
+		await page.locator('.control-handle').click();
 		await page.locator('.settings-gear').click();
 		const dialog = page.locator('dialog.settings-modal');
 		await expect(dialog).toBeVisible();
@@ -130,15 +133,17 @@ test.describe('settings modal (chunk A)', () => {
 
 	test('the close button dismisses the modal', async ({ page }) => {
 		await page.goto('/?k=ci-test-key');
+		await page.locator('.control-handle').click();
 		await page.locator('.settings-gear').click();
 		const dialog = page.locator('dialog.settings-modal');
 		await expect(dialog).toBeVisible();
-		await page.getByRole('button', { name: 'Close' }).click();
+		await dialog.getByRole('button', { name: 'Close', exact: true }).click();
 		await expect(dialog).toBeHidden();
 	});
 
 	test('Esc dismisses the modal', async ({ page }) => {
 		await page.goto('/?k=ci-test-key');
+		await page.locator('.control-handle').click();
 		await page.locator('.provider-badge').click();
 		const dialog = page.locator('dialog.settings-modal');
 		await expect(dialog).toBeVisible();
@@ -151,8 +156,36 @@ test.describe('settings modal (chunk A)', () => {
 	// unset in this e2e env — this must remain true after the restart UI lands too.
 	test('no restart action is reachable when ALLOW_SELF_RESTART is unset', async ({ page }) => {
 		await page.goto('/?k=ci-test-key');
+		await page.locator('.control-handle').click();
 		await page.locator('.settings-gear').click();
 		await expect(page.locator('dialog.settings-modal')).toBeVisible();
 		await expect(page.getByRole('button', { name: /restart/i })).toHaveCount(0);
+	});
+});
+
+test.describe('lounge upgrades', () => {
+	test('timeline sheet opens, shows the empty state, and closes with Escape', async ({ page }) => {
+		await page.goto('/?k=ci-test-key');
+		await page.getByRole('button', { name: 'Got it' }).click();
+		await page.getByRole('button', { name: 'Open conversation' }).click();
+		const sheet = page.getByRole('dialog', { name: 'Conversation' });
+		await expect(sheet).toBeVisible();
+		await expect(sheet.getByText('Nothing here yet')).toBeVisible();
+		await page.keyboard.press('Escape');
+		await expect(sheet).toBeHidden();
+	});
+
+	test('control center exposes the action-confirmation toggle (on by default) and ambient mode', async ({
+		page
+	}) => {
+		await page.goto('/?k=ci-test-key');
+		await page.locator('.control-handle').click();
+		const confirm = page.getByRole('checkbox', { name: /Confirm actions/ });
+		await expect(confirm).toBeChecked();
+		await page.getByRole('button', { name: /Ambient mode/ }).click();
+		const ambient = page.getByRole('dialog', { name: 'Ambient mode' });
+		await expect(ambient).toBeVisible();
+		await page.getByRole('button', { name: 'Exit ambient mode' }).click();
+		await expect(ambient).toBeHidden();
 	});
 });

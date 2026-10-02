@@ -30,6 +30,7 @@ import {
 	TASK_RETENTION_REPORTED_MS,
 	TASK_RETENTION_UNREPORTED_MS
 } from './constants';
+import { sanitizeCards } from '$lib/cards';
 import {
 	toPublicTask,
 	type TaskBusEvent,
@@ -108,6 +109,10 @@ function normalizeTaskRecord(raw: unknown): TaskRecord | null {
 		updatedAt
 	};
 	if (typeof o.result === 'string') record.result = o.result;
+	if (Array.isArray(o.cards)) {
+		const cards = sanitizeCards(o.cards);
+		if (cards.length > 0) record.cards = cards;
+	}
 	if (
 		typeof o.failureCode === 'string' &&
 		VALID_FAILURE_CODES.has(o.failureCode as TaskFailureCode)
@@ -390,6 +395,7 @@ export async function reconcileStale(
 						updatedAt: nowIso
 					};
 					delete updated.result;
+					delete updated.cards;
 					events.push({ type: 'task.reported', id: t.id });
 					return updated;
 				}

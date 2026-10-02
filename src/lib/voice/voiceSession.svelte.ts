@@ -1,5 +1,5 @@
 import { pulse } from '$lib/haptics';
-import { SvelteSet } from 'svelte/reactivity';
+import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { getLocale, t, type MessageKey, type VoiceErrorCode } from '$lib/i18n';
 import { DEFAULT_PERSONA, type VoicePersona } from '$lib/persona/types';
 import { CAPABILITY_MATRIX } from '$lib/providers/matrix';
@@ -51,6 +51,10 @@ import {
 	type ReportGateInput
 } from './taskReports';
 import { createTaskStream } from './taskStream';
+import { approvalSummary, needsApproval, type PendingApproval } from './approvals';
+import { applyOrbitEvent, orbitFromSnapshot, type OrbitTask } from './orbit';
+import type { Timeline } from './timeline.svelte';
+import { sanitizeCards, type ResultCard } from '$lib/cards';
 
 export type CaptionPhase = 'hidden' | 'live' | 'fading';
 
@@ -237,9 +241,22 @@ function quarantineHermesToolOutput(raw: string): string {
  * Auth: HttpOnly cookie only — do not pass raw voice keys into the SPA.
  */
 export function createVoiceDemo(
-	opts: { persona?: VoicePersona; asyncTasksEnabled?: boolean } = {}
+	opts: {
+		persona?: VoicePersona;
+		asyncTasksEnabled?: boolean;
+		/** Durable conversation record shown in the Lounge's timeline sheet. */
+		timeline?: Timeline;
+		/** Ask the provider to transcribe the user's speech so it shows in the timeline
+		 * (read at each connect, so a toggle applies from the next connection). */
+		speechInTimeline?: () => boolean;
+		/** Live toggle: confirm side-effect tasks on screen before dispatching them. */
+		approvalsEnabled?: () => boolean;
+	} = {}
 ) {
 	const persona = opts.persona ?? DEFAULT_PERSONA;
+	const timeline = opts.timeline ?? null;
+	const speechInTimeline = opts.speechInTimeline ?? (() => false);
+	const approvalsEnabled = opts.approvalsEnabled ?? (() => true);
 	/** VOICE_ASYNC_TASKS kill switch (Part F), threaded from +page.server.ts via
 	 * LazicLounge.svelte — read once for the life of this session, same discipline as
 	 * `persona` above (a flag flip implies a different session entirely). */
@@ -427,6 +444,16 @@ export function createVoiceDemo(
 
 	// --- Async task-queue client state (Phase 4+5) -------------------------------------
 	let taskStream: ReturnType<typeof createTaskStream> | null = null;
+	/** Task orbit — every visible task (in flight or finished-but-unheard). Display only. */
+	let orbitTasks = $state<OrbitTask[]>([]);
+	/** Side-effect tasks waiting for the user's go-ahead (approval card), oldest first. */
+	let pendingApprovals = $state<PendingApproval[]>([]);
+	/** Task ids whose result cards already went into the timeline (bus events can repeat). */
+	const cardsLogged = new SvelteSet<string>();
+	/** Assistant speech for the current response, committed to the timeline on response.done. */
+	let assistantDraft = '';
+	/** Live user-speech transcription → timeline row, keyed by provider item id. */
+	const userSpeechRows = new SvelteMap<string, { id: string; text: string }>();
 	/** FIFO of unclaimed done/failed results. Not $state — only pendingReportCount (below)
 	 * is reactive; the array itself is internal bookkeeping (see taskReports.ts). */
 	let pendingReports: PublicTask[] = [];
@@ -1476,6 +1503,7 @@ export function createVoiceDemo(
 									tool,
 									typeof payload.label === 'string' ? payload.label : undefined
 								);
+								timeline?.addTool(hermesWaitActivity);
 								updateWaitStatus();
 							} catch {
 								/* ignore malformed tool frames */
@@ -1641,10 +1669,12 @@ export function createVoiceDemo(
 				failureCode?: string;
 				id?: string;
 				title?: string;
+				cards?: unknown;
 			} | null;
 
 			let output: string;
 			if (body?.ok && body.mode === 'inline') {
+				if (body.id) logTaskCards(body.id, sanitizeCards(body.cards));
 				output =
 					body.outcome === 'done'
 						? (body.result ?? '(no result)')
@@ -2038,6 +2068,126 @@ export function createVoiceDemo(
 		scheduleReportRecheck();
 	}
 
+	function logTaskCards(taskId: string, cards: ResultCard[] | undefined) {
+		if (!timeline || !cards || cards.length === 0 || cardsLogged.has(taskId)) return;
+		cardsLogged.add(taskId);
+		timeline.add({ kind: 'cards', cards });
+	}
+
+	function recordTaskEventInTimeline(ev: TaskBusEvent) {
+		if (!timeline) return;
+		switch (ev.type) {
+			case 'task.queued':
+				timeline.upsertTask(ev.task.id, ev.task.title, 'queued');
+				return;
+			case 'task.running':
+				timeline.upsertTask(ev.task.id, ev.task.title, 'running');
+				return;
+			case 'task.done':
+			case 'task.failed':
+				timeline.upsertTask(ev.task.id, ev.task.title, ev.type === 'task.done' ? 'done' : 'failed');
+				logTaskCards(ev.task.id, ev.task.cards);
+				return;
+			case 'task.progress':
+				timeline.addTool(formatHermesToolActivity(ev.tool, ev.label));
+				return;
+			default:
+				return;
+		}
+	}
+
+	/** User cancels one queued/running task from the orbit card. */
+	async function cancelTask(id: string): Promise<boolean> {
+		try {
+			const res = await fetch('/api/tasks/cancel', {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ id })
+			});
+			if (!res.ok) return false;
+			// The bus also sends task.cleared; drop it locally right away for responsiveness.
+			orbitTasks = orbitTasks.filter((t) => t.id !== id);
+			inFlightTaskIds.delete(id);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	// --- Action approvals ----------------------------------------------------------------
+
+	/** Dispatch an approved side-effect task in the background; its result resurfaces
+	 * through the normal report path like any other background task. */
+	async function dispatchApproved(approval: PendingApproval): Promise<boolean> {
+		try {
+			const res = await fetch('/api/tasks/dispatch', {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ request: approval.request, title: approval.title, waitMs: 0 }),
+				signal: AbortSignal.timeout(DISPATCH_CLIENT_TIMEOUT_MS)
+			});
+			const body = (await res.json().catch(() => null)) as { ok?: boolean } | null;
+			return Boolean(body?.ok);
+		} catch {
+			return false;
+		}
+	}
+
+	function takeApproval(id?: string): PendingApproval | null {
+		const target = id ? pendingApprovals.find((a) => a.id === id) : pendingApprovals[0];
+		if (!target) return null;
+		pendingApprovals = pendingApprovals.filter((a) => a.id !== target.id);
+		return target;
+	}
+
+	/** Tap on the approval card. */
+	async function approve(id: string): Promise<void> {
+		const approval = takeApproval(id);
+		if (!approval) return;
+		timeline?.setApproval(approval.id, 'approved');
+		pulse(8);
+		const ok = await dispatchApproved(approval);
+		if (!ok) statusOverride = { kind: 'key', key: 'error.voiceToolError' };
+	}
+
+	function decline(id: string): void {
+		const approval = takeApproval(id);
+		if (!approval) return;
+		timeline?.setApproval(approval.id, 'declined');
+	}
+
+	/** The model relays a spoken yes/no (resolve_approval tool). */
+	async function resolveApprovalByVoice(callId: string, approved: boolean, myTurn: number) {
+		const approval = takeApproval();
+		if (!approval) {
+			await completeToolCall(
+				callId,
+				'Nothing is waiting for approval right now. Do not claim anything was done.',
+				myTurn
+			);
+			return;
+		}
+		timeline?.setApproval(approval.id, approved ? 'approved' : 'declined');
+		if (!approved) {
+			await completeToolCall(
+				callId,
+				'Declined by the user — it will not be done. Acknowledge briefly and move on.',
+				myTurn
+			);
+			return;
+		}
+		const ok = await dispatchApproved(approval);
+		await completeToolCall(
+			callId,
+			ok
+				? 'Approved and started. Say nothing more about it now; the result will reach you later and you will deliver it then. Never claim it is done before that.'
+				: 'Approved, but it could not be started. Tell the user it did not go through.',
+			myTurn
+		);
+	}
+
 	function handleTaskSnapshot(tasks: PublicTask[], inFlight: number) {
 		// `inFlight` (a plain count from the server) is superseded by rebuilding
 		// inFlightTaskIds from the snapshot's full task list — this is the authoritative
@@ -2059,6 +2209,11 @@ export function createVoiceDemo(
 			}
 		}
 		setPendingReports(next);
+		orbitTasks = orbitFromSnapshot(tasks, orbitTasks);
+		for (const t of orbitTasks) {
+			timeline?.upsertTask(t.id, t.title, t.status);
+			if (t.cards) logTaskCards(t.id, t.cards);
+		}
 		// A task can finish entirely while the stream is disconnected (e.g. tab backgrounded),
 		// so no live bus event ever arms the settle timer for it — make sure the reconnect
 		// snapshot itself gets a poll armed for anything it just surfaced as pending.
@@ -2070,6 +2225,8 @@ export function createVoiceDemo(
 		// (pure, unit-tested there) for the same reason as mergeReports/selectBatch — this
 		// closure has zero test coverage in this repo.
 		applyInFlightEvent(inFlightTaskIds, ev);
+		orbitTasks = applyOrbitEvent(orbitTasks, ev);
+		recordTaskEventInTimeline(ev);
 		switch (ev.type) {
 			case 'task.done':
 			case 'task.failed':
@@ -2163,10 +2320,28 @@ export function createVoiceDemo(
 			return;
 		}
 
+		if (name === 'resolve_approval') {
+			let approved = false;
+			try {
+				const args =
+					typeof event.arguments === 'string'
+						? (JSON.parse(event.arguments) as { approved?: unknown })
+						: {};
+				approved = args.approved === true;
+			} catch {
+				/* malformed arguments — treated as "not approved" */
+			}
+			beginHermesWorkingUi(myTurn, DISPATCH_UI_TIMEOUT_MS);
+			void resolveApprovalByVoice(callId, approved, myTurn);
+			return;
+		}
+
 		if (name === 'start_task') {
 			let request: string;
 			let title: string | undefined;
 			let background = false;
+			let modelWantsApproval = false;
+			let modelSummary: string | undefined;
 			try {
 				const args =
 					typeof event.arguments === 'string'
@@ -2174,15 +2349,45 @@ export function createVoiceDemo(
 								request?: unknown;
 								title?: unknown;
 								background?: unknown;
+								requires_approval?: unknown;
+								approval_summary?: unknown;
 							})
 						: {};
 				request = typeof args.request === 'string' ? args.request.trim() : '';
 				title = typeof args.title === 'string' && args.title.trim() ? args.title.trim() : undefined;
 				background = args.background === true;
+				modelWantsApproval = args.requires_approval === true;
+				modelSummary =
+					typeof args.approval_summary === 'string' ? args.approval_summary : undefined;
 			} catch {
 				request = '';
 			}
 			beginHermesWorkingUi(myTurn, DISPATCH_UI_TIMEOUT_MS);
+			if (request && needsApproval(request, modelWantsApproval, approvalsEnabled())) {
+				// Approval gate: nothing is dispatched until the user says yes (tap or voice).
+				// Both the model's own flag and a client-side side-effect backstop can trigger it.
+				const approval: PendingApproval = {
+					id: `ap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+					callId,
+					summary: approvalSummary(request, modelSummary),
+					request,
+					title,
+					createdAt: Date.now()
+				};
+				pendingApprovals = [...pendingApprovals, approval];
+				timeline?.add({
+					kind: 'approval',
+					approvalId: approval.id,
+					summary: approval.summary,
+					status: 'pending'
+				});
+				void completeToolCall(
+					callId,
+					`Waiting for the user's approval on screen: "${approval.summary}". It has NOT been done. Tell them in one short sentence what you are about to do and ask them to confirm. If they answer yes or no out loud, call resolve_approval.`,
+					myTurn
+				);
+				return;
+			}
 			if (!request) {
 				void completeToolCall(
 					callId,
@@ -2235,6 +2440,24 @@ export function createVoiceDemo(
 		void completeToolCall(callId, `Hermes unavailable: unknown tool ${name || '(empty)'}`, myTurn);
 	}
 
+	function noteUserSpeechInTimeline(key: string, text: string, mode: 'replace' | 'append') {
+		if (!timeline) return;
+		const row = userSpeechRows.get(key);
+		const next = mode === 'append' && row ? row.text + text : text;
+		if (!next.trim()) return;
+		if (row) {
+			row.text = next;
+			timeline.updateText(row.id, next.trim());
+		} else {
+			const id = timeline.add({ kind: 'user', text: next.trim(), via: 'voice' });
+			userSpeechRows.set(key, { id, text: next });
+			if (userSpeechRows.size > 50) {
+				const oldest = userSpeechRows.keys().next().value;
+				if (oldest !== undefined) userSpeechRows.delete(oldest);
+			}
+		}
+	}
+
 	function handleServerEvent(event: RealtimeServerEvent, myTurn: number) {
 		if (destroyed || myTurn !== turnId) return;
 
@@ -2242,9 +2465,10 @@ export function createVoiceDemo(
 		// Not part of the switch below since these are matched by type *prefix*, not an exact
 		// literal — and are a no-op when the flag isn't set, same as any other unhandled event.
 		if (event.type.startsWith('conversation.item.input_audio_transcription.')) {
-			if (transcript) {
-				const parsed = readUserTranscriptEvent(event);
-				if (parsed) transcript.noteUserTranscript(parsed.key, parsed.text, parsed.mode);
+			const parsed = readUserTranscriptEvent(event);
+			if (parsed) {
+				transcript?.noteUserTranscript(parsed.key, parsed.text, parsed.mode);
+				noteUserSpeechInTimeline(parsed.key, parsed.text, parsed.mode);
 			}
 			return;
 		}
@@ -2339,6 +2563,7 @@ export function createVoiceDemo(
 			case 'response.created': {
 				// Fresh caption turn for each assistant response (incl. post-Hermes).
 				startCaptionTurn();
+				assistantDraft = '';
 				captionDbg.log('response_created', captionSnap());
 				// Live-trace xAI silent-drop fix: mark this report turn's response.create as
 				// acknowledged. Must run before the WebRTC-only early return below — xAI (the
@@ -2371,6 +2596,7 @@ export function createVoiceDemo(
 				responseHadAudio = true;
 				appendCaptionDelta(event.delta);
 				transcript?.appendAssistantDelta(event.delta);
+				assistantDraft += event.delta;
 				return;
 			}
 			case 'response.output_audio.delta': {
@@ -2450,6 +2676,9 @@ export function createVoiceDemo(
 				const shouldSettleUi = !hermesBridgeActive && !suppressIdleForTool;
 				captionDbg.log('response_done', captionSnap({ shouldSettleUi }));
 				transcript?.commitAssistant();
+				if (assistantDraft.trim())
+					timeline?.add({ kind: 'assistant', text: assistantDraft.trim() });
+				assistantDraft = '';
 				// WebRTC: response.done fires as soon as audio finishes *generating*, well
 				// before the track finishes *playing* — mute only once the real end-of-playback
 				// signal (output_audio_buffer.stopped) arrives. PCM (xAI): whenIdle() genuinely
@@ -2597,7 +2826,8 @@ export function createVoiceDemo(
 					// Model id itself is resolved provider-side (each provider's own client.ts
 					// falls back to its own default transcription model) — this only signals
 					// "on" for a binding that opted in. See VoicePersona.reviewConversationForMemory.
-					inputTranscription: persona.reviewConversationForMemory ? { model: '' } : null,
+					inputTranscription:
+						persona.reviewConversationForMemory || speechInTimeline() ? { model: '' } : null,
 					// VOICE_ASYNC_TASKS kill switch (Part F) — gates which tools this client
 					// registers on session.update (see tools.ts's resolveVoiceTools()).
 					asyncTasksEnabled
@@ -3286,6 +3516,7 @@ export function createVoiceDemo(
 
 			client?.sendUserText(text);
 			transcript?.noteUserText(text);
+			timeline?.add({ kind: 'user', text, via: 'text' });
 			if (riderReports.length > 0) {
 				reportTurnId = myTurn;
 				// Rider turn — instructions deliberately allow tools (see
@@ -3630,6 +3861,15 @@ export function createVoiceDemo(
 		get pendingReportCount() {
 			return pendingReportCount;
 		},
+		get orbitTasks() {
+			return orbitTasks;
+		},
+		get pendingApproval() {
+			return pendingApprovals[0] ?? null;
+		},
+		approve,
+		decline,
+		cancelTask,
 		warm,
 		toggle,
 		setTalkMode,

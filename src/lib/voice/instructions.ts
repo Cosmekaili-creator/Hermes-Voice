@@ -66,7 +66,14 @@ the same question again. If instead the detail actually changes what you'd need 
 different date, a different place, a correction — a task already running can't be updated or asked a
 follow-up, so start one fresh task with the corrected brief instead of letting the old one answer the
 wrong question. Either way, never ask the same thing twice; only start something new when they've
-actually changed what they're asking.`;
+actually changed what they're asking.
+
+Anything with a real effect in the world — sending or replying to a message, booking, buying, paying,
+deleting, creating or moving calendar entries, changing a setting or a system — needs the user's
+explicit go-ahead first. For those, set requires_approval to true on start_task and give a one-line
+approval_summary of exactly what will happen. The user then sees an approval card. Tell them briefly what
+you're about to do and ask them to confirm; never say it's done. If they confirm or refuse out loud, call
+resolve_approval with approved true or false. If they tap the card instead, it's handled for you.`;
 
 /** Legacy blocking framing — only used when VOICE_ASYNC_TASKS is off (Part F kill switch),
  * paired with the legacy ask_hermes tool and runHermesBridge(). Byte-identical to the
