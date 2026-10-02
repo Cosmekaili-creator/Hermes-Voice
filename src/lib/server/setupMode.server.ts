@@ -1,7 +1,13 @@
 import { env } from '$env/dynamic/private';
 import { error, type Cookies, type RequestEvent } from '@sveltejs/kit';
 import { createHmac } from 'node:crypto';
-import { isAuthenticated, requireOwner, requireVoiceKey, resolveBinding } from '$lib/server/auth';
+import {
+	isAuthenticated,
+	isCrossSiteSubresource,
+	requireOwner,
+	requireVoiceKey,
+	resolveBinding
+} from '$lib/server/auth';
 import { isMultiUserMode } from '$lib/server/bindings.server';
 import { safeEqualStr } from '$lib/server/cryptoEqual.server';
 import { isAuthLockedOut, recordAuthFailure } from '$lib/server/rateLimit.server';
@@ -79,6 +85,9 @@ export function extractSetupToken(event: RequestEvent, body?: unknown): string |
 		if (bearer) return bearer;
 	}
 
+	// Same rule as the voice key's `?k=`: a token arriving via another site's subresource
+	// is ignored, so a third-party page can't burn the operator's failed-token budget.
+	if (isCrossSiteSubresource(event)) return null;
 	return nonEmptyString(event.url.searchParams.get('token'));
 }
 
@@ -101,7 +110,9 @@ export function checkSetupToken(event: RequestEvent, provided: string | null): b
 	if (!effectiveSetupToken()) return false;
 	if (isAuthLockedOut(event, 'key')) return false;
 	if (isValidSetupToken(provided)) return true;
-	recordAuthFailure(event, `setup:${provided}`, 'key');
+	// Same id as resolveBinding uses for a raw key, so a wrong Bearer seen by both the
+	// Lounge and setup checks on one request counts once.
+	recordAuthFailure(event, provided, 'key');
 	return false;
 }
 

@@ -9,6 +9,7 @@ import {
 	type Binding
 } from '$lib/server/bindings.server';
 import { isAuthLockedOut, recordAuthFailure } from '$lib/server/rateLimit.server';
+import { sessionSecret } from '$lib/server/sessionSecret.server';
 
 /** `__Host-` on HTTPS (Secure + Path=/ + no Domain). Plain name on local HTTP. */
 export const VOICE_COOKIE_HOST = '__Host-hv';
@@ -52,18 +53,26 @@ export function isStrongVoiceKey(key: string): boolean {
 		if (k.length % unit === 0 && k.slice(0, unit).repeat(k.length / unit) === k) return false;
 	}
 	// Shannon estimate over the key's own character distribution — catches long but
-	// low-variety keys ("aaaaaaaaaaaaaaaaaaabcdef"). 80 bits ≈ a 20-char random hex string.
+	// low-variety keys. 64 bits keeps every realistic random 24+ char key (24 random hex
+	// chars score ~80–90) while rejecting padded patterns.
 	let bits = 0;
 	for (const n of counts.values()) {
 		const p = n / k.length;
 		bits -= n * Math.log2(p);
 	}
-	return bits >= 80;
+	return bits >= 64;
 }
 
-/** Derived session token — cookie never stores the raw voice key. */
+/**
+ * Derived session token — cookie never stores the raw voice key. Keyed with the server's
+ * session secret (sessionSecret.server.ts), so it can't be computed from a guessed voice
+ * key: cookie guesses are 256-bit blind guesses and need no lockout.
+ */
 export function derivedSessionToken(voiceKey: string): string {
-	return createHmac('sha256', voiceKey).update('hermes-voice-session-v1').digest('hex');
+	return createHmac('sha256', sessionSecret())
+		.update('hermes-voice-session-v2\0')
+		.update(voiceKey)
+		.digest('hex');
 }
 
 /**
@@ -92,14 +101,15 @@ export function extractVoiceKey(event: RequestEvent, body?: unknown): string | n
 }
 
 /**
- * A cross-site `<img>`/`<script>`/fetch pointed at us. Any page on the web can make a
+ * A cross-site (or sibling-subdomain) `<img>`/`<script>`/fetch pointed at us. Any page can make a
  * visitor's browser send `?k=…` this way, so such a key is ignored outright — neither
  * evaluated nor counted — instead of letting a third-party page burn that visitor's
  * failed-key budget. Top-level navigations (a `?k=` link clicked in mail/chat) still work.
  */
-function isCrossSiteSubresource(event: RequestEvent): boolean {
+export function isCrossSiteSubresource(event: RequestEvent): boolean {
 	const h = event.request.headers;
-	if (h.get('sec-fetch-site') !== 'cross-site') return false;
+	const site = h.get('sec-fetch-site');
+	if (site !== 'cross-site' && site !== 'same-site') return false;
 	const dest = h.get('sec-fetch-dest');
 	return dest !== null && dest !== 'document';
 }
@@ -126,10 +136,9 @@ export async function resolveBinding(event: RequestEvent, body?: unknown): Promi
 	if (!raw && !cookie) return null;
 
 	// Raw key first (it may be a deliberate switch to another binding), then the session
-	// cookie. Each has its own failed-attempt budget (see AuthFailureKind): once one is
-	// exhausted for this address, that kind answers "no" WITHOUT being evaluated (no
-	// oracle), while the other kind keeps working — so a lockout of raw keys forced by a
-	// third-party page never signs out a browser holding a valid cookie.
+	// cookie. Raw keys have a failed-attempt budget: once exhausted for this address they
+	// answer "no" WITHOUT being evaluated (no oracle). Cookies are unaffected by it, so a
+	// raw-key lockout (even one forced by a third-party page) never signs anyone out.
 	if (raw && !isAuthLockedOut(event, 'key')) {
 		const fromKey = await matchCredential(raw, null);
 		// Store unavailable (no key configured yet / bindings unreadable): fail closed, but
@@ -139,13 +148,14 @@ export async function resolveBinding(event: RequestEvent, body?: unknown): Promi
 		if (!isLiveSetupToken(raw)) recordAuthFailure(event, raw, 'key');
 	}
 
-	if (cookie && !isAuthLockedOut(event, 'cookie')) {
+	if (cookie) {
+		// No lockout on this path: the cookie is HMAC(serverSecret, voiceKey), so a guessed
+		// cookie is a blind 256-bit guess, not a voice-key guess (see derivedSessionToken).
+		// That's what lets a signed-in browser keep working whatever else its IP is doing.
 		const fromCookie = await matchCredential(null, cookie);
 		if (fromCookie === 'unavailable') return null;
 		if (fromCookie) return fromCookie;
-		recordAuthFailure(event, cookie, 'cookie');
-		// A stale/invalid Lounge cookie (e.g. after key rotation) would otherwise be
-		// re-counted on every request the browser makes — drop it once.
+		// Stale/invalid (e.g. after key rotation or a secret reset) — drop it once.
 		clearSessionCookie(event.cookies);
 	}
 	return null;

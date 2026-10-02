@@ -1,4 +1,5 @@
 import type { RequestEvent } from '@sveltejs/kit';
+import { createHmac, randomBytes } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { derivedSessionToken, isStrongVoiceKey, resolveBinding } from './auth';
 import {
@@ -12,6 +13,7 @@ import {
 	recordAuthFailure,
 	takeRateLimit
 } from './rateLimit.server';
+import { extractSetupToken } from './setupMode.server';
 import { probeHermes, sameHermesBase } from './setupProbes.server';
 
 const ORIGIN = 'https://voice.example.com';
@@ -346,5 +348,63 @@ describe('Hermes key binding to its base (M1)', () => {
 		process.env.HERMES_API_KEY = 'stored-secret';
 		const result = await probeHermes({ hermesApiBase: 'http://192.168.1.66:8642' });
 		expect(result).toEqual({ ok: false, code: 'hermes_key_required' });
+	});
+});
+
+describe('verification round 2', () => {
+	const KEY = 'correct-horse-battery-staple-0123456789';
+	beforeEach(() => {
+		delete process.env.MULTI_USER;
+		process.env.VOICE_URL_KEY = KEY;
+	});
+	afterEach(() => {
+		delete process.env.VOICE_URL_KEY;
+	});
+
+	it('bad cookies never lock out a valid cookie from the same address (server-keyed cookies)', async () => {
+		const peer = uniquePublicIp();
+		for (let i = 0; i < FAILED_AUTH.limit * 2; i++) {
+			await resolveBinding(makeEvent({ peer, cookies: { '__Host-hv': `bad-${i}` } }));
+		}
+		const ok = await resolveBinding(
+			makeEvent({ peer, cookies: { '__Host-hv': derivedSessionToken(KEY) } })
+		);
+		expect(ok?.id).toBe('env');
+	});
+
+	it('session cookies depend on the server secret, not just the voice key', () => {
+		const a = derivedSessionToken(KEY);
+		expect(a).toMatch(/^[0-9a-f]{64}$/);
+		// HMAC(voiceKey, const) — the old, offline-computable derivation — must not match.
+		expect(a).not.toBe(createHmac('sha256', KEY).update('hermes-voice-session-v1').digest('hex'));
+	});
+
+	it('same-site (sibling subdomain) subresource ?k= is ignored too', async () => {
+		const peer = uniquePublicIp();
+		for (let i = 0; i < FAILED_AUTH.limit + 3; i++) {
+			await resolveBinding(
+				makeEvent({
+					peer,
+					path: `/health?k=x${i}`,
+					headers: { 'sec-fetch-site': 'same-site', 'sec-fetch-dest': 'image' }
+				})
+			);
+		}
+		expect(isAuthLockedOut(makeEvent({ peer }))).toBe(false);
+	});
+
+	it('cross-site subresource ?token= is not read as a setup token', () => {
+		const ev = makeEvent({
+			path: '/setup?token=abc',
+			headers: { 'sec-fetch-site': 'cross-site', 'sec-fetch-dest': 'image' }
+		});
+		expect(extractSetupToken(ev)).toBeNull();
+		expect(extractSetupToken(makeEvent({ path: '/setup?token=abc' }))).toBe('abc');
+	});
+
+	it('random 24-char hex keys are always accepted', () => {
+		for (let i = 0; i < 3000; i++) {
+			expect(isStrongVoiceKey(randomBytes(12).toString('hex'))).toBe(true);
+		}
 	});
 });
