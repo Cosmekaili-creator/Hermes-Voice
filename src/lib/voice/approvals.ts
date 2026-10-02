@@ -16,8 +16,29 @@
  * "…and add it to…", "could you book…", "I need you to email…", "Envoie…", "Reserva…").
  * Clause-anchored on purpose: "what did Marc send me?" is a lookup, not an action. This is
  * a BACKSTOP to the model's own requires_approval flag, not a complete classifier.
+ * Entries are regex fragments (some carry a negative lookahead, e.g. "tell" but not
+ * "tell me").
  */
 const VERBS = [
+	'follow up with',
+	'reply-all',
+	'reply all',
+	'sign',
+	'upload',
+	'push',
+	'drop',
+	'kill',
+	'confirm',
+	'give',
+	'disable',
+	'enable',
+	'reset',
+	'envoyez',
+	'mets à jour',
+	'mettez à jour',
+	'manda',
+	'mándale',
+	'escríbele',
 	// en
 	'send',
 	'reply',
@@ -25,24 +46,24 @@ const VERBS = [
 	'forward',
 	'email',
 	'e-mail',
-	'text',
+	'text(?! summary)',
 	'message',
 	'ping',
 	'notify',
-	'tell',
-	'let',
-	'remind',
+	'tell(?! (?:me|us)\\b)',
+	'let(?! (?:me|us|it)\\b)',
+	'remind(?! (?:me|us)\\b)',
 	'write to',
 	'post',
 	'publish',
 	'tweet',
-	'share',
+	'share(?! price)',
 	'invite',
 	'book',
 	'reserve',
 	'buy',
 	'purchase',
-	'order',
+	'order(?! of\\b)',
 	'pay',
 	'wire',
 	'transfer',
@@ -54,12 +75,12 @@ const VERBS = [
 	'cancel',
 	'unsubscribe',
 	'archive',
-	'mark',
+	'mark(?! my words)',
 	'move',
 	'schedule',
 	'reschedule',
 	'create',
-	'add',
+	'add(?! up\\b)',
 	'accept',
 	'decline',
 	'update',
@@ -164,9 +185,12 @@ const VERBS = [
 ];
 
 const LEAD_INS = [
+	'kindly',
+	'hermes should',
+	'you should',
 	'and',
 	'then',
-	'please',
+	'please,?',
 	'also',
 	'could you',
 	'can you',
@@ -190,17 +214,28 @@ const LEAD_INS = [
 	'podrías'
 ];
 
-function escapeRe(s: string): string {
-	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 const SIDE_EFFECT_RE = new RegExp(
-	`(?:^|[.;:!?\\n]\\s*|(?:^|\\s)(?:${LEAD_INS.map(escapeRe).join('|')})\\s+)(?:${VERBS.map(escapeRe).join('|')})(?=$|[\\s,.;:!?])`,
+	`(?:^|[.;:!?\\n]\\s*|(?:^|\\s)(?:${LEAD_INS.join('|')})\\s+)(?:${VERBS.join('|')})(?=$|[\\s,.;:!?])`,
 	'iu'
 );
 
 export function looksLikeSideEffect(request: string): boolean {
 	return SIDE_EFFECT_RE.test(request.trim());
+}
+
+/**
+ * Is this (typed or transcribed) user reply a clear yes? Any negation wins, so "yes — no
+ * wait" or "don't" is not consent. en/fr/es.
+ */
+const NEGATIVE_RE =
+	/\b(?:no|nope|not|don't|do not|stop|wait|cancel|never|hold on|non|pas|attends|annule|jamais|espera|nunca|cancela)\b/iu;
+const AFFIRMATIVE_RE =
+	/\b(?:yes|yeah|yep|sure|ok|okay|go ahead|do it|send it|confirm(?:ed)?|approved?|please do|oui|d'accord|vas-y|allez-y|c'est bon|confirme|sí|si|vale|claro|adelante|hazlo|confirmo)\b/iu;
+
+export function isAffirmative(reply: string): boolean {
+	const text = reply.trim();
+	if (!text || NEGATIVE_RE.test(text)) return false;
+	return AFFIRMATIVE_RE.test(text);
 }
 
 export function needsApproval(request: string, modelFlag: boolean, enabled: boolean): boolean {

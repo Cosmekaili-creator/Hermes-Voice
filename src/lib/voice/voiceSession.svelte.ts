@@ -51,7 +51,7 @@ import {
 	type ReportGateInput
 } from './taskReports';
 import { createTaskStream } from './taskStream';
-import { approvalSummary, needsApproval, type PendingApproval } from './approvals';
+import { approvalSummary, isAffirmative, needsApproval, type PendingApproval } from './approvals';
 import { applyOrbitEvent, orbitFromSnapshot, type OrbitTask } from './orbit';
 import type { Timeline } from './timeline.svelte';
 import { sanitizeCards, type ResultCard } from '$lib/cards';
@@ -455,6 +455,10 @@ export function createVoiceDemo(
 	 * (or because a tool result told it to).
 	 */
 	let userTurnSeq = 0;
+	/** userTurnSeq as of the current response's start — what a tool call in it may rely on. */
+	let responseUserSeq = 0;
+	/** Latest words the user actually typed / said (transcribed), tagged with their turn. */
+	let lastUserWords: { seq: number; text: string } | null = null;
 	/** Task ids whose result cards already went into the timeline (bus events can repeat). */
 	const cardsLogged = new SvelteSet<string>();
 	/** Assistant speech for the current response, committed to the timeline on response.done. */
@@ -2187,16 +2191,48 @@ export function createVoiceDemo(
 		approvalId: string | undefined,
 		myTurn: number
 	) {
-		const candidate = approvalId
-			? pendingApprovals.find((a) => a.id === approvalId)
-			: pendingApprovals[0];
-		if (candidate && userTurnSeq <= candidate.userTurnAtCreate) {
-			await completeToolCall(
+		const refuse = (why: string) =>
+			completeToolCall(
 				callId,
-				'Refused: the user has not answered yet. Only the user can approve — wait for them to say yes or no, or to tap the card. Never call resolve_approval on their behalf.',
+				`Refused: ${why} Only the user can approve. Do not claim anything was done.`,
 				myTurn
 			);
+		const candidate = approvalId
+			? pendingApprovals.find((a) => a.id === approvalId && !a.legacy)
+			: undefined;
+		if (!candidate) {
+			await refuse('no pending approval matches that approval_id.');
 			return;
+		}
+		// A turn that delivers task reports may carry injected text — never decide there.
+		if (reportTurnId !== null && myTurn === reportTurnId) {
+			await refuse('approvals cannot be resolved while delivering results.');
+			return;
+		}
+		// The user must have acted after the request, before THIS response began.
+		if (responseUserSeq <= candidate.userTurnAtCreate) {
+			await refuse(
+				'the user has not answered yet — wait for them to say yes or no, or tap the card.'
+			);
+			return;
+		}
+		if (approved) {
+			// Consent needs the user's actual words, not just "a turn happened" (noise, TV,
+			// "wait, no"…). Without a transcript of what they said, send them to the card.
+			const words =
+				lastUserWords && lastUserWords.seq > candidate.userTurnAtCreate ? lastUserWords.text : null;
+			if (!words) {
+				await refuse(
+					'I cannot hear the exact answer (speech transcription is off). Ask the user to tap Approve on the card.'
+				);
+				return;
+			}
+			if (!isAffirmative(words)) {
+				await refuse(
+					'what the user said was not a clear yes. Ask again, or let them tap the card.'
+				);
+				return;
+			}
 		}
 		const approval = candidate ? takeApproval(candidate.id) : null;
 		if (!approval) {
@@ -2532,6 +2568,11 @@ export function createVoiceDemo(
 			if (parsed) {
 				transcript?.noteUserTranscript(parsed.key, parsed.text, parsed.mode);
 				noteUserSpeechInTimeline(parsed.key, parsed.text, parsed.mode);
+				const prev = lastUserWords?.seq === userTurnSeq ? lastUserWords.text : '';
+				lastUserWords = {
+					seq: userTurnSeq,
+					text: (parsed.mode === 'append' ? prev + parsed.text : parsed.text).slice(-400)
+				};
 			}
 			return;
 		}
@@ -2630,6 +2671,7 @@ export function createVoiceDemo(
 				// Fresh caption turn for each assistant response (incl. post-Hermes).
 				startCaptionTurn();
 				assistantDraft = '';
+				responseUserSeq = userTurnSeq;
 				captionDbg.log('response_created', captionSnap());
 				// Live-trace xAI silent-drop fix: mark this report turn's response.create as
 				// acknowledged. Must run before the WebRTC-only early return below — xAI (the
@@ -3582,6 +3624,7 @@ export function createVoiceDemo(
 			pulse(8);
 
 			userTurnSeq += 1;
+			lastUserWords = { seq: userTurnSeq, text: text.slice(0, 400) };
 			client?.sendUserText(text);
 			transcript?.noteUserText(text);
 			timeline?.add({ kind: 'user', text, via: 'text' });

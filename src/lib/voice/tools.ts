@@ -97,7 +97,7 @@ export const RESOLVE_APPROVAL_TOOL = {
 				description: 'The approval_id given in the start_task result for this pending action.'
 			}
 		},
-		required: ['approved']
+		required: ['approved', 'approval_id']
 	}
 } as const;
 

@@ -306,7 +306,7 @@ export const en = {
 	'control.ambient': 'Ambient mode',
 	'control.confirmActions': 'Confirm actions before {assistant} acts',
 	'control.speechInTimeline': 'Show my speech in the conversation',
-	'control.speechInTimelineHint': 'Applies from the next connection',
+	'control.speechInTimelineHint': 'Needed for spoken approvals · applies from the next connection',
 	'control.owner': 'Owner',
 	'control.hermes': 'Hermes connection',
 	'control.users': 'Users',

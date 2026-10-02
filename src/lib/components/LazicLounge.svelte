@@ -578,12 +578,7 @@
 			{/if}
 
 			{#if demo.pendingApproval}
-				<ApprovalCard
-					approval={demo.pendingApproval}
-					assistantName={persona.assistantName}
-					onApprove={() => void demo.approve(demo.pendingApproval!.id)}
-					onDecline={() => demo.decline(demo.pendingApproval!.id)}
-				/>
+				<!-- shown in .approval-layer, outside the inert background -->
 			{:else if latestCards && !orbitSelectedId}
 				<div class="cards-tray" transition:fade={{ duration: 180 }}>
 					<ResultCards cards={latestCards.cards} compact row />
@@ -635,6 +630,18 @@
 			<span class="home-bar" aria-hidden="true"></span>
 		</div>
 	</div>
+
+	{#if demo.pendingApproval}
+		<div class="approval-layer">
+			<ApprovalCard
+				approval={demo.pendingApproval}
+				assistantName={persona.assistantName}
+				voiceApproval={speechInTimeline || persona.reviewConversationForMemory}
+				onApprove={() => void demo.approve(demo.pendingApproval!.id)}
+				onDecline={() => demo.decline(demo.pendingApproval!.id)}
+			/>
+		</div>
+	{/if}
 
 	<TimelineSheet
 		open={timelineOpen}
@@ -1221,5 +1228,16 @@
 	/* Wrapper only exists to make the background inert while an overlay is open. */
 	.stage-bg {
 		display: contents;
+	}
+
+	/* Above every overlay (and outside the inert background) so an approval can always be
+	   answered, even with the timeline or ambient mode open. */
+	.approval-layer {
+		position: fixed;
+		z-index: 31;
+		left: 50%;
+		bottom: calc(7.5rem + env(safe-area-inset-bottom));
+		translate: -50% 0;
+		width: min(26rem, calc(100vw - 2rem));
 	}
 </style>

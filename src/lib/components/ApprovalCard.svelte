@@ -6,11 +6,14 @@
 	let {
 		approval,
 		assistantName,
+		voiceApproval = false,
 		onApprove,
 		onDecline
 	}: {
 		approval: PendingApproval;
 		assistantName: string;
+		/** Spoken yes only works when the user's speech is transcribed (see voiceSession). */
+		voiceApproval?: boolean;
 		onApprove: () => void;
 		onDecline: () => void;
 	} = $props();
@@ -59,7 +62,9 @@
 			>{t('approval.approve')}</button
 		>
 	</div>
-	<p class="approval__hint">{t('approval.voiceHint')}</p>
+	{#if voiceApproval}
+		<p class="approval__hint">{t('approval.voiceHint')}</p>
+	{/if}
 </div>
 
 <style>

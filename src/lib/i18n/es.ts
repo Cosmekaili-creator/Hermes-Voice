@@ -315,7 +315,8 @@ export const es = {
 	'control.ambient': 'Modo ambiente',
 	'control.confirmActions': 'Confirmar acciones antes de que {assistant} actúe',
 	'control.speechInTimeline': 'Mostrar lo que digo en la conversación',
-	'control.speechInTimelineHint': 'Se aplica desde la próxima conexión',
+	'control.speechInTimelineHint':
+		'Necesario para aprobar en voz alta · se aplica desde la próxima conexión',
 	'control.owner': 'Propietario',
 	'control.hermes': 'Conexión con Hermes',
 	'control.users': 'Usuarios',

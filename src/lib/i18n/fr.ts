@@ -320,7 +320,8 @@ export const fr = {
 	'control.ambient': 'Mode ambiant',
 	'control.confirmActions': 'Confirmer les actions avant que {assistant} agisse',
 	'control.speechInTimeline': 'Afficher mes paroles dans la conversation',
-	'control.speechInTimelineHint': 'S’applique à la prochaine connexion',
+	'control.speechInTimelineHint':
+		'Nécessaire pour approuver à voix haute · s’applique à la prochaine connexion',
 	'control.owner': 'Propriétaire',
 	'control.hermes': 'Connexion Hermes',
 	'control.users': 'Utilisateurs',
