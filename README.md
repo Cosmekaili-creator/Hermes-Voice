@@ -27,24 +27,22 @@ Bring your own provider key and Hermes instance.
 ## Screenshots
 
 <p align="center">
-  <img src="graphics/screenshots/main-interface.jpg" alt="Hermes Voice Lounge — idle, with the owner-only provider pill and settings gear" width="260" />
+  <img src="graphics/screenshots/orb-controller.png" alt="The orb is the controller — listening state with the mirrored spectrum ring, gesture hints and a typed-input fallback" width="260" />
   &nbsp;&nbsp;
-  <img src="graphics/screenshots/voice-active.jpg" alt="Hermes Voice Lounge — active listening / speaking ring" width="260" />
+  <img src="graphics/screenshots/conversation-timeline.png" alt="Conversation timeline — both sides of the conversation, Hermes tool steps and a pending approval, with search and export" width="260" />
   &nbsp;&nbsp;
-  <img src="graphics/screenshots/provider-settings.jpg" alt="Settings modal — voice provider, key, and voice picker" width="260" />
+  <img src="graphics/screenshots/task-orbit.png" alt="Task orbit — queued, running and ready background tasks around the orb, with live progress, Cancel and Read it to me" width="260" />
 </p>
 
 <p align="center">
-  <img src="graphics/screenshots/hermes-settings.jpg" alt="Settings modal — Hermes connection" width="260" />
+  <img src="graphics/screenshots/result-approval-cards.png" alt="Result cards for calendar events and links, and an approval card for an outgoing email" width="260" />
   &nbsp;&nbsp;
-  <img src="graphics/screenshots/users-admin.jpg" alt="Owner user admin — per-binding voice key and Hermes connection" width="260" />
-  &nbsp;&nbsp;
-  <img src="graphics/screenshots/owner-health.jpg" alt="Owner health — provider mint and per-binding Hermes readiness" width="260" />
+  <img src="graphics/screenshots/control-center.png" alt="Control center — talk mode, voice, language, provider, ambient mode and owner links" width="260" />
 </p>
 
 <p align="center">
-  <em>Top:</em> Lounge at rest with the settings pill/gear · live session · provider settings.
-  <em>Bottom:</em> Hermes connection settings · multi-user admin · owner health.
+  <em>Top:</em> the orb as the controller · conversation timeline · task orbit.
+  <em>Bottom:</em> result cards with an action approval · control center.
 </p>
 
 ## License
