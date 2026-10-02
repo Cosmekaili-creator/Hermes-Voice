@@ -2595,11 +2595,13 @@ export function createVoiceDemo(
 			}
 			case 'input_audio_buffer.speech_stopped': {
 				userSpeechActive = false;
+				// Server VAD saw the user finish speaking — a genuine user turn for the approval
+				// gate, even when it was a barge-in over the assistant (not 'listening').
+				if (talkMode === 'handsfree') userTurnSeq += 1;
 				if (talkMode !== 'handsfree' || !handsfreeArmed) return;
 				if (state !== 'listening') return;
 				// Server VAD commits + responds — never client commitAndRespond.
 				// Keep capture running while armed; only gate appends during thinking.
-				userTurnSeq += 1;
 				turnId += 1;
 				const stoppedTurn = turnId;
 				unpromptedReportStreak = 0;
