@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-10-02
+
+The Lounge redesign and a full security-hardening pass. Also the first tagged release since 0.7.0, so it includes everything in [0.8.0] below (async task queue, auto-reconnect, OpenAI reliability fixes), which was never tagged separately.
+
+### Upgrade notes
+
+- **Everyone is signed out once** (session cookies are now signed with a server secret). Users re-open their `?k=` link.
+- **Update your installed systemd unit** (`deploy/hermes-voice.service` now sets `StateDirectory=hermes-voice`), or set `SESSION_SECRET` (32+ characters) in the environment. Without either, the secret is generated into the data directory; if that isn't writable (e.g. `ProtectSystem=strict` without `ReadWritePaths`), it can't persist and every restart signs everyone out.
+- **Changing a Hermes URL now requires re-entering its API key** (settings modal, `/setup`, `/owner/users`, probes).
+- **Action approvals are on by default** ("Confirm actions" in the control center). "Show my speech in the conversation" is opt-in and also needed for spoken approvals.
+- New optional settings: `TRUSTED_PROXY_IPS`, `SESSION_SECRET`, `CAPTION_DEBUG`, `CAPTION_DEBUG_DIR` — see `docs/CONFIGURATION.md`.
+- Behind a reverse proxy other than a local one (e.g. a Docker bridge), set `TRUSTED_PROXY_IPS` or per-client rate limiting will see the proxy's address.
+
 ### Added
 
 - **The orb is the controller**: tap to talk, hold for push-to-talk, swipe down to stop; the pill button is gone. Each state has its own motion (idle breathing, inward ripples while listening, an orbiting comet while working, spectrum bars while speaking, dim red on errors), and the spectrum is now mirrored and log-spaced so the ring is symmetric instead of lopsided.
@@ -14,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Task orbit**: background tasks orbit the ring as satellites (queued / running / ready / failed); tap one for its live progress feed, result cards, **Cancel** (new `POST /api/tasks/cancel`, binding-scoped, retires the task silently) or **Read it to me**.
 - **Result cards and action approvals**: Hermes may attach an `hv-cards` block (events, emails, links, contacts, notes) that is shown on screen and never read aloud — validated server-side (`$lib/cards`), links restricted to http(s). Anything with a real-world effect (send, book, buy, delete, calendar changes…) now needs the user's go-ahead on an approval card or out loud (`resolve_approval` tool) before it is dispatched; triggered by the model's `requires_approval` flag _or_ a client-side side-effect backstop. Toggle: "Confirm actions before Hermes acts" (on by default).
 - **Control center + ambient mode**: the top-bar cluster moved into a pull-down control center (talk mode, language, provider, display, toggles, owner links). Ambient mode is a full-screen desk/car display with a large clock, next calendar event and unread count (new cached `POST /api/glance`, read-only prompt), ready tasks, and a large orb.
+
+### Changed
 
 - **Approval hardening (from independent review)**: a spoken approval (`resolve_approval`) is only honoured after a genuine user turn that came after the request, carries the `approval_id`, and can never be issued by the model in the same breath or in a result-delivery turn, and an approving answer must be the user's own clear yes (typed or transcribed — otherwise the card must be tapped); the side-effect backstop covers request lead-ins ("could you…", "I need you to…", "let … know") and French/Spanish verbs; the legacy `ask_hermes` path is gated too.
 - Overlays (timeline, control center, ambient) make the background inert, close on Escape from anywhere, and return focus to the button that opened them.
@@ -168,6 +183,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - First public release: Lazic Lounge press-to-talk UI, xAI realtime voice, Hermes `ask_hermes` bridge, URL-key auth, example systemd / nginx deploy
 
+[0.9.0]: https://github.com/Cosmekaili-creator/Hermes-Voice/compare/0.7.0...0.9.0
 [0.6.0]: https://github.com/Cosmekaili-creator/Hermes-Voice/compare/0.5.0...0.6.0
 [0.5.0]: https://github.com/Cosmekaili-creator/Hermes-Voice/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/Cosmekaili-creator/Hermes-Voice/compare/0.3.0...0.4.0
