@@ -1,5 +1,6 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
 import { randomUUID } from 'node:crypto';
+import { checkApproval } from '$lib/server/approvalGate.server';
 import { requireVoiceKey } from '$lib/server/auth';
 import { MAX_HERMES_REQUEST_CHARS } from '$lib/server/hermes';
 import { assertSameOrigin } from '$lib/server/origin.server';
@@ -106,6 +107,11 @@ export const POST: RequestHandler = async (event) => {
 	if (!request) {
 		return json({ ok: false, code: 'empty_request' }, { status: 400 });
 	}
+
+	// Server-side approval backstop (see approvalGate.server.ts): for covered roles a
+	// side-effecting brief needs the single-use token minted for exactly this brief.
+	const approval = checkApproval(binding, request, body);
+	if (!approval.ok) return json(approval.payload, { status: approval.status });
 
 	// Reconciliation not required here, just a plain read — the stream route is what needs
 	// freshness; a brief TOCTOU window on the cap check is acceptable.

@@ -142,6 +142,8 @@ export const es = {
 	'wizard.error.invalid_base': 'URL base de Hermes inválida',
 	'wizard.error.base_not_allowed':
 		'La base de Hermes debe ser loopback o una dirección de red privada',
+	'wizard.error.base_not_allowlisted':
+		'La base de Hermes no es un endpoint de Hermes configurado (ver HERMES_ALLOWED_TARGETS)',
 	'wizard.error.mint_failed': 'Falló el mint del proveedor',
 	'wizard.error.mint_upstream': 'El proveedor rechazó la clave',
 	'wizard.error.hermes_unreachable': 'Hermes inalcanzable',
@@ -217,6 +219,8 @@ export const es = {
 	'users.error.second_owner': 'Solo se permite un propietario',
 	'users.error.last_owner': 'No se puede eliminar o desactivar al único propietario',
 	'users.error.base_not_allowed': 'La base de Hermes debe ser loopback o una red privada',
+	'users.error.base_not_allowlisted':
+		'La base de Hermes no es un endpoint de Hermes configurado (ver HERMES_ALLOWED_TARGETS)',
 	'users.error.invalid_base': 'URL base de Hermes no válida',
 	'users.error.missing_base': 'La URL base de Hermes es obligatoria',
 	'users.error.multi_user_disabled': 'El multi-usuario no está activado',
@@ -314,6 +318,7 @@ export const es = {
 	'control.display': 'Pantalla',
 	'control.ambient': 'Modo ambiente',
 	'control.confirmActions': 'Confirmar acciones antes de que {assistant} actúe',
+	'control.confirmActionsLocked': 'Obligatorio para tu cuenta',
 	'control.speechInTimeline': 'Mostrar lo que digo en la conversación',
 	'control.speechInTimelineHint':
 		'Necesario para aprobar en voz alta · se aplica desde la próxima conexión',

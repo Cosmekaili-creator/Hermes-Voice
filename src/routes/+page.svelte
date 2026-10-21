@@ -29,6 +29,7 @@
 		provider={data.provider}
 		isOwner={data.isOwner}
 		asyncTasksEnabled={data.asyncTasksEnabled}
+		approvalsMandatory={data.approvalsMandatory}
 		timelineScope={data.timelineScope}
 	/>
 {:else}

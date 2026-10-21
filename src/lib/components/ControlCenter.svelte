@@ -15,6 +15,7 @@
 		provider,
 		isOwner,
 		confirmActions,
+		confirmActionsLocked = false,
 		speechInTimeline,
 		onClose,
 		onTalkMode,
@@ -28,6 +29,8 @@
 		provider: ProviderId;
 		isOwner: boolean;
 		confirmActions: boolean;
+		/** Server-enforced approvals: shown on, not changeable. */
+		confirmActionsLocked?: boolean;
 		speechInTimeline: boolean;
 		onClose: () => void;
 		onTalkMode: (mode: TalkMode) => void;
@@ -113,11 +116,17 @@
 
 		<div class="toggles">
 			<label class="toggle">
-				<span class="toggle__text">{t('control.confirmActions')}</span>
+				<span class="toggle__text">
+					{t('control.confirmActions')}
+					{#if confirmActionsLocked}
+						<span class="toggle__hint">{t('control.confirmActionsLocked')}</span>
+					{/if}
+				</span>
 				<input
 					type="checkbox"
 					class="toggle__input"
-					checked={confirmActions}
+					checked={confirmActions || confirmActionsLocked}
+					disabled={confirmActionsLocked}
 					onchange={(e) => onConfirmActions(e.currentTarget.checked)}
 				/>
 			</label>
@@ -350,6 +359,11 @@
 
 	.link span {
 		color: #8eb8bc;
+	}
+
+	.toggle__input:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 
 	.tile:focus-visible,

@@ -3,8 +3,17 @@ import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { probeMint as probeOpenAIMint } from '$lib/providers/openai/mint.server';
 import { probeMint as probeXaiMint } from '$lib/providers/xai/mint.server';
-import { defaultHermesBase } from '$lib/server/bindings.server';
-import { isAllowedHermesHost } from '$lib/server/hermesAllowlist';
+import {
+	defaultHermesBase,
+	isMultiUserMode,
+	readBindings,
+	readEnvTrimmed
+} from '$lib/server/bindings.server';
+import {
+	isAllowedHermesHost,
+	isAllowedHermesTarget,
+	parseHermesTargetEntry
+} from '$lib/server/hermesAllowlist';
 
 export { isAllowedHermesHost } from '$lib/server/hermesAllowlist';
 
@@ -68,6 +77,27 @@ export function sameHermesBase(
 	}
 }
 
+/**
+ * Every Hermes endpoint this deployment is configured to talk to, as canonical `host:port`
+ * keys: the app-wide base (`HERMES_API_BASE` or the default), each multi-user binding's
+ * base, and the operator's `HERMES_ALLOWED_TARGETS` extras (comma-separated `host:port`).
+ */
+export async function configuredHermesTargets(): Promise<Set<string>> {
+	const targets = new Set<string>();
+	const add = (raw: string | null | undefined) => {
+		const key = raw ? parseHermesTargetEntry(raw) : null;
+		if (key) targets.add(key);
+	};
+	add(
+		nonEmpty(process.env.HERMES_API_BASE) ?? nonEmpty(env.HERMES_API_BASE) ?? defaultHermesBase()
+	);
+	if (isMultiUserMode()) {
+		for (const user of (await readBindings()).users) add(user.hermesApiBase);
+	}
+	for (const entry of (readEnvTrimmed('HERMES_ALLOWED_TARGETS') ?? '').split(',')) add(entry);
+	return targets;
+}
+
 export type HermesFetchTarget =
 	{ ok: true; base: string; fetchBase: string; hostHeader?: string } | { ok: false; code: string };
 
@@ -80,6 +110,11 @@ export type HermesFetchTarget =
 export async function resolveHermesFetchTarget(raw: string | null): Promise<HermesFetchTarget> {
 	const baseCheck = validateHermesApiBase(raw);
 	if (!baseCheck.ok) return baseCheck;
+	// Chat paths always pass (their base is configured); an unsaved probe target must be
+	// configured too. Save paths only run validateHermesApiBase, so "save then test" works.
+	if (!isAllowedHermesTarget(baseCheck.base, await configuredHermesTargets())) {
+		return { ok: false, code: 'base_not_allowlisted' };
+	}
 
 	const url = new URL(baseCheck.base);
 	const host = url.hostname;

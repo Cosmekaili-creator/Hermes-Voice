@@ -133,6 +133,8 @@ export const en = {
 	'wizard.error.missing_base': 'Hermes base URL is required',
 	'wizard.error.invalid_base': 'Invalid Hermes base URL',
 	'wizard.error.base_not_allowed': 'Hermes base must be loopback or a private network address',
+	'wizard.error.base_not_allowlisted':
+		'Hermes base is not a configured Hermes endpoint (see HERMES_ALLOWED_TARGETS)',
 	'wizard.error.hermes_key_required': 'Changing the Hermes URL requires re-entering its API key',
 	'wizard.error.mint_failed': 'Provider mint failed',
 	'wizard.error.mint_upstream': 'Provider rejected the key',
@@ -207,6 +209,8 @@ export const en = {
 	'users.error.second_owner': 'Only one owner is allowed',
 	'users.error.last_owner': 'Cannot remove or disable the sole owner',
 	'users.error.base_not_allowed': 'Hermes base must be loopback or a private network address',
+	'users.error.base_not_allowlisted':
+		'Hermes base is not a configured Hermes endpoint (see HERMES_ALLOWED_TARGETS)',
 	'users.error.hermes_key_required': 'Changing the Hermes URL requires re-entering its API key',
 	'users.error.invalid_base': 'Invalid Hermes base URL',
 	'users.error.missing_base': 'Hermes base URL is required',
@@ -305,6 +309,7 @@ export const en = {
 	'control.display': 'Display',
 	'control.ambient': 'Ambient mode',
 	'control.confirmActions': 'Confirm actions before {assistant} acts',
+	'control.confirmActionsLocked': 'Required for your account',
 	'control.speechInTimeline': 'Show my speech in the conversation',
 	'control.speechInTimelineHint': 'Needed for spoken approvals · applies from the next connection',
 	'control.owner': 'Owner',

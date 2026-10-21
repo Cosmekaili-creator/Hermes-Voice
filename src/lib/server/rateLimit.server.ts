@@ -232,6 +232,15 @@ export function isAuthLockedOut(event: RequestEvent, kind: AuthFailureKind = 'ke
 /** Per-request dedupe: hooks + route both resolve the same credential on one request. */
 const countedFailures = new WeakMap<Request, Set<string>>();
 
+/**
+ * One fail2ban-friendly line per rejected voice key / setup token. `ip` must already be
+ * validated (a literal IP or `unknown`) — never interpolate an attacker-controlled string,
+ * and never the credential itself.
+ */
+export function formatAuthFailLog(ip: string, scope: AuthFailureKind): string {
+	return `hv-auth-fail ip=${ip} scope=${scope}`;
+}
+
 /** Count one failed credential attempt — at most once per (request, credential). */
 export function recordAuthFailure(
 	event: RequestEvent,
@@ -246,6 +255,12 @@ export function recordAuthFailure(
 	const id = `${kind}:${credential}`;
 	if (seen.has(id)) return;
 	seen.add(id);
+	if (kind === 'key') {
+		// Same address derivation as the lockout, validated so a spoofed header can't
+		// inject log content. Cookie failures stay silent (only the cookie holder can burn them).
+		const ip = stripMapped(clientIp(event));
+		console.log(formatAuthFailLog(isIP(ip) ? ip : 'unknown', 'key'));
+	}
 	for (const b of failedAuthKeys(event, kind)) takeRateLimit(b.key, b.limit, b.windowMs);
 }
 
@@ -263,6 +278,26 @@ export function enforceRateLimit(
 ): void {
 	const ip = ipBucketKey(clientIp(event));
 	const key = principalId ? `${bucket}:p:${principalId}:${ip}` : `${bucket}:ip:${ip}`;
+	throwIfLimited(event, key, limit, windowMs);
+}
+
+/**
+ * Like `enforceRateLimit` with a principal, but the bucket is the principal alone — the
+ * client address is NOT mixed in, so a binding can't multiply its budget by changing
+ * network (phone → wifi) or rotating an IPv6 /64. For budgets that cost real money or
+ * writes per user rather than per connection.
+ */
+export function enforcePrincipalRateLimit(
+	event: RequestEvent,
+	bucket: string,
+	limit: number,
+	windowMs: number,
+	principalId: string
+): void {
+	throwIfLimited(event, `${bucket}:b:${principalId}`, limit, windowMs);
+}
+
+function throwIfLimited(event: RequestEvent, key: string, limit: number, windowMs: number): void {
 	const result = takeRateLimit(key, limit, windowMs);
 	if (!result.ok) {
 		if (event.locals) event.locals.retryAfterSec = result.retryAfterSec;
@@ -282,6 +317,9 @@ export const RATE = {
 	// per-binding in-flight concurrency cap (routes/api/memory-review) is separate from
 	// this fixed-window request-rate bucket.
 	memoryReview: { limit: 4, windowMs: 60_000 },
+	// Per-binding (not per-IP) daily ceiling on reviews actually run — each one is a full
+	// Hermes agent turn with memory-write access, so the cost/abuse bound is per user.
+	memoryReviewDaily: { limit: 24, windowMs: 24 * 60 * 60_000 },
 	setupProbe: { limit: 20, windowMs: 60_000 },
 	setupSave: { limit: 10, windowMs: 60_000 },
 	ownerHealth: { limit: 10, windowMs: 60_000 },

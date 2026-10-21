@@ -254,6 +254,10 @@ export type PendingApproval = {
 	userTurnAtCreate: number;
 	/** Legacy ask_hermes call held open (VOICE_ASYNC_TASKS=0) — approve runs the bridge. */
 	legacy?: boolean;
+	/** Single-use token the server minted for exactly this brief (409 approval_required) —
+	 * sent back with the approved dispatch. Absent when the client gate fired first; the
+	 * approved dispatch then fetches one and retries once. */
+	serverToken?: string;
 };
 
 /** Short one-line summary for the card header: model-provided, else the brief's first clause. */

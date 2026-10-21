@@ -1,12 +1,13 @@
 import type { RequestEvent } from '@sveltejs/kit';
 import { createHmac, randomBytes } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { derivedSessionToken, isStrongVoiceKey, resolveBinding } from './auth';
 import {
 	bucketCount,
 	clientIp,
 	FAILED_AUTH,
 	FAILED_AUTH_V6_48,
+	formatAuthFailLog,
 	ipBucketKey,
 	isAuthLockedOut,
 	MAX_BUCKETS,
@@ -166,6 +167,12 @@ describe('rate-limit store cap (M3)', () => {
 	});
 });
 
+describe('formatAuthFailLog', () => {
+	it('renders a single key=value line', () => {
+		expect(formatAuthFailLog('1.2.3.4', 'key')).toBe('hv-auth-fail ip=1.2.3.4 scope=key');
+	});
+});
+
 describe('failed-credential lockout (H2)', () => {
 	it('locks an address out after FAILED_AUTH.limit distinct failures', () => {
 		const peer = uniquePublicIp();
@@ -207,6 +214,54 @@ describe('failed-credential lockout (H2)', () => {
 				makeEvent({ peer, path: '/?k=bad', cookies: { '__Host-hv': derivedSessionToken(KEY) } })
 			);
 			expect(withCookie?.id).toBe('env');
+		});
+
+		it('logs exactly one fail2ban line per bad-key request, never the credential', async () => {
+			const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+			try {
+				const peer = uniquePublicIp();
+				const secretGuess = 'super-secret-guess-do-not-log';
+				await resolveBinding(makeEvent({ peer, path: `/health?k=${secretGuess}` }));
+				expect(log).toHaveBeenCalledTimes(1);
+				expect(log).toHaveBeenCalledWith(`hv-auth-fail ip=${peer} scope=key`);
+				expect(JSON.stringify(log.mock.calls)).not.toContain(secretGuess);
+				// A cookie failure is not logged.
+				log.mockClear();
+				await resolveBinding(makeEvent({ peer, path: '/', cookies: { '__Host-hv': 'stale' } }));
+				expect(log).not.toHaveBeenCalled();
+			} finally {
+				log.mockRestore();
+			}
+		});
+
+		it('logs the socket address, not a spoofed X-Forwarded-For, from a non-trusted peer', async () => {
+			const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+			try {
+				const peer = uniquePublicIp();
+				await resolveBinding(
+					makeEvent({ peer, path: '/health?k=bad', headers: { 'x-forwarded-for': '9.9.9.9' } })
+				);
+				expect(log).toHaveBeenCalledWith(`hv-auth-fail ip=${peer} scope=key`);
+				expect(JSON.stringify(log.mock.calls)).not.toContain('9.9.9.9');
+			} finally {
+				log.mockRestore();
+			}
+		});
+
+		it('logs ip=unknown when the derived address is not a literal IP (no log injection)', () => {
+			const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+			try {
+				// Trusted loopback proxy forwarding a garbage right-most XFF entry.
+				const ev = makeEvent({
+					peer: '127.0.0.1',
+					headers: { 'x-forwarded-for': '1.2.3.4 scope=cookie hv-auth-fail ip=8.8.8.8' }
+				});
+				recordAuthFailure(ev, 'inject', 'key');
+				expect(log).toHaveBeenCalledTimes(1);
+				expect(log).toHaveBeenCalledWith('hv-auth-fail ip=unknown scope=key');
+			} finally {
+				log.mockRestore();
+			}
 		});
 
 		it('cross-site subresource ?k= (e.g. <img>) is ignored: not evaluated, not counted', async () => {
@@ -321,7 +376,12 @@ describe('isStrongVoiceKey (H3)', () => {
 });
 
 describe('Hermes key binding to its base (M1)', () => {
+	beforeEach(() => {
+		// These probe non-default bases on purpose; the target allowlist is covered elsewhere.
+		process.env.HERMES_ALLOWED_TARGETS = '10.1.2.3:8642,192.168.1.66:8642';
+	});
 	afterEach(() => {
+		delete process.env.HERMES_ALLOWED_TARGETS;
 		delete process.env.HERMES_API_BASE;
 		delete process.env.HERMES_API_KEY;
 	});

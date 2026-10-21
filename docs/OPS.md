@@ -60,11 +60,17 @@ Voice validates Hermes bases on wizard save, user create/update, and probes (`va
 
 **Not allowed:** public DNS names, cloud metadata, and typical Compose **service DNS** names (`hermes-alice`, etc.) — those fail with `base_not_allowed`.
 
+On top of that host check, Voice only talks to **configured** `host:port` targets: `HERMES_API_BASE` (or the default `127.0.0.1:8642`), each binding’s `hermesApiBase`, and anything in `HERMES_ALLOWED_TARGETS` — otherwise `base_not_allowlisted`. Add extra ports to `HERMES_ALLOWED_TARGETS` before probing them from the wizard.
+
 Recommended patterns:
 
 1. **systemd Voice on the host** + Hermes containers publishing `127.0.0.1:8642`, `127.0.0.1:8643`, … Bindings use `http://127.0.0.1:…` (matches current VPS-style deploys).
 2. **Compose Voice with `network_mode: host`** (Linux/VPS) so the same loopback URLs work. On Docker Desktop (Mac/Windows), host networking differs — prefer Voice on the host or use numeric RFC1918 gateway IPs carefully.
 3. Avoid binding Hermes API to public interfaces. Keep TLS termination on host nginx/Caddy in front of Voice only.
+
+## fail2ban
+
+Every rejected voice key or setup token writes one line to stdout (the journal under systemd): `hv-auth-fail ip=<addr> scope=key`. `<addr>` is the same client address the in-app lockout uses (`unknown` if it is not a literal IP); the credential is never logged. Point a fail2ban filter at that line (`failregex = hv-auth-fail ip=<HOST> scope=key`) with the `systemd` backend.
 
 ## Compose (Voice example)
 

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { MAX_HERMES_REQUEST_CHARS } from './hermes';
 import {
 	buildMemoryReviewPrompt,
+	MAX_REVIEW_ASSISTANT_TOTAL_CHARS,
+	MAX_REVIEW_ASSISTANT_TURN_CHARS,
 	MAX_REVIEW_TURN_CHARS,
 	MAX_REVIEW_TURNS,
 	MEMORY_REVIEW_SYSTEM_PROMPT,
@@ -68,6 +70,32 @@ describe('sanitizeTranscriptTurns', () => {
 		);
 		expect(result?.[0].text).not.toContain('<<<');
 		expect(result?.[0].text).not.toContain('>>>');
+	});
+
+	it('caps each assistant turn tighter than a user turn', () => {
+		const long = 'word '.repeat(400);
+		const result = sanitizeTranscriptTurns([
+			{ role: 'user', text: long },
+			{ role: 'assistant', text: long }
+		]);
+		expect(result?.[0]?.text.length).toBeGreaterThan(MAX_REVIEW_ASSISTANT_TURN_CHARS);
+		expect(result?.[0]?.text.length).toBeLessThanOrEqual(MAX_REVIEW_TURN_CHARS);
+		expect(result?.[1]?.text.length).toBeLessThanOrEqual(MAX_REVIEW_ASSISTANT_TURN_CHARS);
+	});
+
+	it('caps total assistant text, keeping the newest assistant turns', () => {
+		const turns: { role: string; text: string }[] = [];
+		for (let i = 0; i < 30; i++) {
+			turns.push({ role: 'user', text: `question ${i}` });
+			turns.push({ role: 'assistant', text: `answer ${i} ${'x'.repeat(280)}` });
+		}
+		const result = sanitizeTranscriptTurns(turns)!;
+		const assistantChars = result
+			.filter((t) => t.role === 'assistant')
+			.reduce((n, t) => n + t.text.length, 0);
+		expect(assistantChars).toBeLessThanOrEqual(MAX_REVIEW_ASSISTANT_TOTAL_CHARS);
+		expect(result.at(-1)?.text.startsWith('answer 29')).toBe(true);
+		expect(result.filter((t) => t.role === 'user')).toHaveLength(30);
 	});
 
 	it('collapses embedded newlines/whitespace to single spaces', () => {

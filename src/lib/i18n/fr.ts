@@ -143,6 +143,8 @@ export const fr = {
 	'wizard.error.invalid_base': 'URL de base Hermes invalide',
 	'wizard.error.base_not_allowed':
 		'La base Hermes doit être en bouclage local ou sur un réseau privé',
+	'wizard.error.base_not_allowlisted':
+		'La base Hermes n’est pas un point d’accès Hermes configuré (voir HERMES_ALLOWED_TARGETS)',
 	'wizard.error.mint_failed': 'Échec du mint fournisseur',
 	'wizard.error.mint_upstream': 'Le fournisseur a rejeté la clé',
 	'wizard.error.hermes_unreachable': 'Hermes injoignable',
@@ -219,6 +221,8 @@ export const fr = {
 	'users.error.second_owner': 'Un seul propriétaire est autorisé',
 	'users.error.last_owner': 'Impossible de retirer ou désactiver le seul propriétaire',
 	'users.error.base_not_allowed': 'La base Hermes doit être en bouclage ou sur un réseau privé',
+	'users.error.base_not_allowlisted':
+		'La base Hermes n’est pas un point d’accès Hermes configuré (voir HERMES_ALLOWED_TARGETS)',
 	'users.error.invalid_base': 'URL de base Hermes invalide',
 	'users.error.missing_base': 'L’URL de base Hermes est requise',
 	'users.error.multi_user_disabled': 'Le multi-utilisateur n’est pas activé',
@@ -319,6 +323,7 @@ export const fr = {
 	'control.display': 'Affichage',
 	'control.ambient': 'Mode ambiant',
 	'control.confirmActions': 'Confirmer les actions avant que {assistant} agisse',
+	'control.confirmActionsLocked': 'Obligatoire pour votre compte',
 	'control.speechInTimeline': 'Afficher mes paroles dans la conversation',
 	'control.speechInTimelineHint':
 		'Nécessaire pour approuver à voix haute · s’applique à la prochaine connexion',

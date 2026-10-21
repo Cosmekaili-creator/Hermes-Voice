@@ -8,11 +8,22 @@
  */
 import type { Locale } from '$lib/i18n';
 import type { TranscriptRole, TranscriptTurn } from '$lib/voice/transcriptLog';
+import { createHash } from 'node:crypto';
 import { MAX_HERMES_REQUEST_CHARS } from './hermes';
+import { readEnvTrimmed } from './runtimeEnv.server';
 
 export const MEMORY_REVIEW_TIMEOUT_MS = 90_000;
 export const MAX_REVIEW_TURN_CHARS = 2_000;
 export const MAX_REVIEW_TURNS = 200;
+/**
+ * Assistant lines are context only (the review prompt already refuses to save anything
+ * solely from them), so they get a much tighter budget than the user's own words: a
+ * client-forged transcript can't smuggle a long payload in as "Assistant" text.
+ */
+export const MAX_REVIEW_ASSISTANT_TURN_CHARS = 300;
+export const MAX_REVIEW_ASSISTANT_TOTAL_CHARS = 3_000;
+/** Request body ceiling, checked before parsing (content-length) and again on the text. */
+export const MAX_REVIEW_BODY_BYTES = 256 * 1024;
 
 // C0 + C1 control characters.
 // eslint-disable-next-line no-control-regex
@@ -40,7 +51,7 @@ function isValidRole(raw: unknown): raw is TranscriptRole {
  * when the transcript is rendered into the prompt (buildMemoryReviewPrompt below).
  * Collapse whitespace, trim, truncate on a word boundary. `null` if empty afterward.
  */
-function sanitizeTurnText(raw: unknown): string | null {
+function sanitizeTurnText(raw: unknown, maxChars: number = MAX_REVIEW_TURN_CHARS): string | null {
 	if (typeof raw !== 'string') return null;
 	let text = stripControlChars(raw);
 	// Angle brackets become look-alike guillemets: no run of characters — however it is
@@ -48,7 +59,7 @@ function sanitizeTurnText(raw: unknown): string | null {
 	text = text.replaceAll('<', '‹').replaceAll('>', '›');
 	text = text.replace(/\s+/g, ' ').trim();
 	if (!text) return null;
-	text = truncateOnWordBoundary(text, MAX_REVIEW_TURN_CHARS);
+	text = truncateOnWordBoundary(text, maxChars);
 	return text || null;
 }
 
@@ -73,17 +84,32 @@ export function sanitizeTranscriptTurns(raw: unknown): TranscriptTurn[] | null {
 		if (!item || typeof item !== 'object') continue;
 		const role = (item as { role?: unknown }).role;
 		if (!isValidRole(role)) continue;
-		const text = sanitizeTurnText((item as { text?: unknown }).text);
+		const text = sanitizeTurnText(
+			(item as { text?: unknown }).text,
+			role === 'assistant' ? MAX_REVIEW_ASSISTANT_TURN_CHARS : MAX_REVIEW_TURN_CHARS
+		);
 		if (!text) continue;
 		sanitized.push({ role, text });
 	}
 
 	if (sanitized.length === 0) return null;
 
-	const capped =
+	const countCapped =
 		sanitized.length > MAX_REVIEW_TURNS
 			? sanitized.slice(sanitized.length - MAX_REVIEW_TURNS)
 			: sanitized;
+
+	// Total assistant-text budget, spent newest-first (the latest context matters most).
+	let assistantBudget = MAX_REVIEW_ASSISTANT_TOTAL_CHARS;
+	const capped: TranscriptTurn[] = [];
+	for (let i = countCapped.length - 1; i >= 0; i--) {
+		const turn = countCapped[i]!;
+		if (turn.role === 'assistant') {
+			if (turn.text.length > assistantBudget) continue;
+			assistantBudget -= turn.text.length;
+		}
+		capped.unshift(turn);
+	}
 
 	const hasUserContent = capped.some((t) => t.role === 'user' && t.text.length > 0);
 	if (!hasUserContent) return null;
@@ -221,4 +247,42 @@ export function buildMemoryReviewPrompt(opts: {
 	}
 
 	return assemble(rendered);
+}
+
+/** Stable fingerprint of a sanitized transcript, for the per-binding replay dedupe. */
+export function transcriptFingerprint(turns: TranscriptTurn[]): string {
+	return createHash('sha256').update(JSON.stringify(turns)).digest('hex');
+}
+
+/**
+ * Tool tripwire. The review is meant to use only the memory tool; Hermes reports each tool
+ * it starts as a `hermes.tool.progress` frame (hermes.ts), so any other name means the
+ * transcript talked the agent into acting. NOTE: the real Hermes tool names have not been
+ * verified against a live agent — `memory` is the name the review prompt itself uses, so
+ * the default allow-list is that one entry, and the default mode only LOGS. Set
+ * `MEMORY_REVIEW_ALLOWED_TOOLS` (comma-separated) to match what a real review reports,
+ * and `MEMORY_REVIEW_TOOL_TRIPWIRE=abort` to also cancel the call once that is confirmed.
+ * Abort is best-effort: the progress frame arrives when a tool starts, not before.
+ */
+export type ToolTripwireMode = 'log' | 'abort';
+
+/** Lowercase `[a-z0-9_]`, at most 40 chars — safe to put in a log line. */
+export function sanitizeToolName(raw: string): string {
+	return raw
+		.toLowerCase()
+		.replace(/[^a-z0-9_]/g, '_')
+		.slice(0, 40);
+}
+
+export function reviewAllowedTools(): Set<string> {
+	const raw = readEnvTrimmed('MEMORY_REVIEW_ALLOWED_TOOLS') ?? 'memory';
+	const names = raw
+		.split(',')
+		.map((n) => sanitizeToolName(n.trim()))
+		.filter(Boolean);
+	return new Set(names.length > 0 ? names : ['memory']);
+}
+
+export function reviewTripwireMode(): ToolTripwireMode {
+	return readEnvTrimmed('MEMORY_REVIEW_TOOL_TRIPWIRE')?.toLowerCase() === 'abort' ? 'abort' : 'log';
 }

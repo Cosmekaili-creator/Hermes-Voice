@@ -251,12 +251,16 @@ export function createVoiceDemo(
 		speechInTimeline?: () => boolean;
 		/** Live toggle: confirm side-effect tasks on screen before dispatching them. */
 		approvalsEnabled?: () => boolean;
+		/** The server enforces approvals for this binding (VOICE_APPROVALS_ENFORCE): the
+		 * on-screen gate stays on whatever the local toggle says. */
+		approvalsMandatory?: boolean;
 	} = {}
 ) {
 	const persona = opts.persona ?? DEFAULT_PERSONA;
 	const timeline = opts.timeline ?? null;
 	const speechInTimeline = opts.speechInTimeline ?? (() => false);
-	const approvalsEnabled = opts.approvalsEnabled ?? (() => true);
+	const approvalsMandatory = opts.approvalsMandatory ?? false;
+	const approvalsEnabled = () => approvalsMandatory || (opts.approvalsEnabled?.() ?? true);
 	/** VOICE_ASYNC_TASKS kill switch (Part F), threaded from +page.server.ts via
 	 * LazicLounge.svelte — read once for the life of this session, same discipline as
 	 * `persona` above (a flag flip implies a different session entirely). */
@@ -1460,7 +1464,12 @@ export function createVoiceDemo(
 		throw new VoiceAppError('error.couldNotStart', true);
 	}
 
-	async function runHermesBridge(callId: string, request: string, myTurn: number) {
+	async function runHermesBridge(
+		callId: string,
+		request: string,
+		myTurn: number,
+		opts?: { approved?: boolean; approvalToken?: string }
+	) {
 		let output: string;
 		const ac = new AbortController();
 		hermesAbort = ac;
@@ -1469,20 +1478,48 @@ export function createVoiceDemo(
 			await playback?.whenIdle();
 			if (destroyed || myTurn !== turnId) return;
 
-			const res = await fetch('/api/hermes', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					Accept: 'text/event-stream'
-				},
-				credentials: 'same-origin',
-				signal: ac.signal,
-				body: JSON.stringify({
-					request,
-					session_id: voiceSessionId
-				})
-			});
-			if (!res.ok) {
+			const post = (approvalToken?: string) =>
+				fetch('/api/hermes', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						Accept: 'text/event-stream'
+					},
+					credentials: 'same-origin',
+					signal: ac.signal,
+					body: JSON.stringify({
+						request,
+						session_id: voiceSessionId,
+						...(approvalToken ? { approval_token: approvalToken } : {})
+					})
+				});
+			let res = await post(opts?.approvalToken);
+			if (res.status === 409) {
+				// Server-side approval backstop (answered as JSON before any stream starts).
+				const conflict = await readApprovalConflict(res);
+				if (conflict?.code === 'approval_required' && conflict.token) {
+					if (opts?.approved) {
+						// The user has just approved this exact brief — retry once with the
+						// token the server minted for it.
+						res = await post(conflict.token);
+					} else {
+						// Hold the call open behind an approval card, as the client gate does.
+						queueApproval({
+							callId,
+							request,
+							summary: approvalSummary(request),
+							legacy: true,
+							serverToken: conflict.token
+						});
+						setIdle();
+						return;
+					}
+				}
+			}
+			if (res.status === 409) {
+				output =
+					'The server did not accept the approval — it was NOT done. Tell the user it did not go through.';
+			} else if (!res.ok) {
 				if (res.status === 499) return;
 				output =
 					res.status === 504
@@ -1657,7 +1694,8 @@ export function createVoiceDemo(
 		request: string,
 		title: string | undefined,
 		myTurn: number,
-		background: boolean
+		background: boolean,
+		approval?: { modelWantsApproval: boolean; summary?: string }
 	) {
 		try {
 			const res = await fetch('/api/tasks/dispatch', {
@@ -1669,9 +1707,31 @@ export function createVoiceDemo(
 				// something to go on and this task is enrichment, not the answer they're
 				// waiting on. Omitted (not just 0) when background !== true, so the route
 				// falls back to its own DISPATCH_WAIT_MS_DEFAULT — see +server.ts.
-				body: JSON.stringify({ request, title, ...(background ? { waitMs: 0 } : {}) }),
+				body: JSON.stringify({
+					request,
+					title,
+					...(background ? { waitMs: 0 } : {}),
+					...(approval?.modelWantsApproval ? { requires_approval: true } : {})
+				}),
 				signal: AbortSignal.timeout(DISPATCH_CLIENT_TIMEOUT_MS)
 			});
+			if (res.status === 409) {
+				// Server-side approval backstop: it wants the human's go-ahead even though the
+				// on-screen gate did not fire (toggle off, or the brief slipped past the
+				// client's heuristics). Same card, same wait-for-the-user flow.
+				const conflict = await readApprovalConflict(res);
+				if (conflict?.code === 'approval_required' && conflict.token) {
+					const queued = queueApproval({
+						callId,
+						request,
+						title,
+						summary: approvalSummary(request, approval?.summary),
+						serverToken: conflict.token
+					});
+					await completeToolCall(callId, waitingForApprovalOutput(queued), myTurn);
+					return;
+				}
+			}
 			const body = (await res.json().catch(() => null)) as {
 				ok?: boolean;
 				mode?: 'inline' | 'queued';
@@ -2128,19 +2188,84 @@ export function createVoiceDemo(
 
 	// --- Action approvals ----------------------------------------------------------------
 
+	/** Parse a 409 from the server-side approval backstop (clones, so `res` stays readable). */
+	async function readApprovalConflict(
+		res: Response
+	): Promise<{ code: string; token?: string } | null> {
+		const body = (await res
+			.clone()
+			.json()
+			.catch(() => null)) as {
+			code?: unknown;
+			approval?: { token?: unknown };
+		} | null;
+		if (!body || typeof body.code !== 'string') return null;
+		const token = body.approval?.token;
+		return { code: body.code, token: typeof token === 'string' ? token : undefined };
+	}
+
+	/** Put an approval card on screen (and in the timeline) for a brief the user must OK. */
+	function queueApproval(input: {
+		callId: string;
+		request: string;
+		summary: string;
+		title?: string;
+		legacy?: boolean;
+		serverToken?: string;
+	}): PendingApproval {
+		const approval: PendingApproval = {
+			id: `ap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+			callId: input.callId,
+			summary: input.summary,
+			request: input.request,
+			title: input.title,
+			createdAt: Date.now(),
+			userTurnAtCreate: userTurnSeq,
+			...(input.legacy ? { legacy: true } : {}),
+			...(input.serverToken ? { serverToken: input.serverToken } : {})
+		};
+		pendingApprovals = [...pendingApprovals, approval];
+		timeline?.add({
+			kind: 'approval',
+			approvalId: approval.id,
+			summary: approval.summary,
+			status: 'pending'
+		});
+		return approval;
+	}
+
+	function waitingForApprovalOutput(approval: PendingApproval): string {
+		return `Waiting for the user's approval on screen (approval_id ${approval.id}): "${approval.summary}". It has NOT been done. Tell them in one short sentence what you are about to do, ask them to confirm, then stop and let them answer. Only after the user themselves says yes or no out loud, call resolve_approval with that approval_id. Never call it in this same turn.`;
+	}
+
 	/** Dispatch an approved side-effect task in the background; its result resurfaces
 	 * through the normal report path like any other background task. */
 	async function dispatchApproved(approval: PendingApproval): Promise<boolean> {
-		try {
+		const send = async (approvalToken?: string) => {
 			const res = await fetch('/api/tasks/dispatch', {
 				method: 'POST',
 				credentials: 'same-origin',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ request: approval.request, title: approval.title, waitMs: 0 }),
+				body: JSON.stringify({
+					request: approval.request,
+					title: approval.title,
+					waitMs: 0,
+					...(approvalToken ? { approval_token: approvalToken } : {})
+				}),
 				signal: AbortSignal.timeout(DISPATCH_CLIENT_TIMEOUT_MS)
 			});
+			const conflict = res.status === 409 ? await readApprovalConflict(res) : null;
 			const body = (await res.json().catch(() => null)) as { ok?: boolean } | null;
-			return Boolean(body?.ok);
+			return { ok: Boolean(body?.ok), conflict };
+		};
+		try {
+			let result = await send(approval.serverToken);
+			if (result.conflict?.code === 'approval_required' && result.conflict.token) {
+				// The user has just approved this exact brief — fetch/refresh the server's
+				// token for it and retry once. approval_invalid (or a second 409) ends here.
+				result = await send(result.conflict.token);
+			}
+			return result.ok;
 		} catch {
 			return false;
 		}
@@ -2161,7 +2286,10 @@ export function createVoiceDemo(
 		pulse(8);
 		if (approval.legacy) {
 			// Legacy blocking bridge: the ask_hermes call was held open — run it now.
-			void runHermesBridge(approval.callId, approval.request, turnId);
+			void runHermesBridge(approval.callId, approval.request, turnId, {
+				approved: true,
+				approvalToken: approval.serverToken
+			});
 			return;
 		}
 		const ok = await dispatchApproved(approval);
@@ -2442,27 +2570,13 @@ export function createVoiceDemo(
 			if (request && needsApproval(request, modelWantsApproval, approvalsEnabled())) {
 				// Approval gate: nothing is dispatched until the user says yes (tap or voice).
 				// Both the model's own flag and a client-side side-effect backstop can trigger it.
-				const approval: PendingApproval = {
-					id: `ap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+				const approval = queueApproval({
 					callId,
-					summary: approvalSummary(request, modelSummary),
 					request,
 					title,
-					createdAt: Date.now(),
-					userTurnAtCreate: userTurnSeq
-				};
-				pendingApprovals = [...pendingApprovals, approval];
-				timeline?.add({
-					kind: 'approval',
-					approvalId: approval.id,
-					summary: approval.summary,
-					status: 'pending'
+					summary: approvalSummary(request, modelSummary)
 				});
-				void completeToolCall(
-					callId,
-					`Waiting for the user's approval on screen (approval_id ${approval.id}): "${approval.summary}". It has NOT been done. Tell them in one short sentence what you are about to do, ask them to confirm, then stop and let them answer. Only after the user themselves says yes or no out loud, call resolve_approval with that approval_id. Never call it in this same turn.`,
-					myTurn
-				);
+				void completeToolCall(callId, waitingForApprovalOutput(approval), myTurn);
 				return;
 			}
 			if (!request) {
@@ -2473,7 +2587,10 @@ export function createVoiceDemo(
 				);
 				return;
 			}
-			void dispatchTask(callId, request, title, myTurn, background);
+			void dispatchTask(callId, request, title, myTurn, background, {
+				modelWantsApproval,
+				summary: modelSummary
+			});
 			return;
 		}
 
@@ -2501,22 +2618,7 @@ export function createVoiceDemo(
 				// Legacy blocking bridge: hold the call open until the user taps the card —
 				// approve() runs the bridge, decline() answers the call with a refusal.
 				outstandingToolCalls.delete(callId);
-				const approval: PendingApproval = {
-					id: `ap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
-					callId,
-					summary: approvalSummary(request),
-					request,
-					createdAt: Date.now(),
-					userTurnAtCreate: userTurnSeq,
-					legacy: true
-				};
-				pendingApprovals = [...pendingApprovals, approval];
-				timeline?.add({
-					kind: 'approval',
-					approvalId: approval.id,
-					summary: approval.summary,
-					status: 'pending'
-				});
+				queueApproval({ callId, request, summary: approvalSummary(request), legacy: true });
 				return;
 			}
 			beginHermesWorkingUi(myTurn);

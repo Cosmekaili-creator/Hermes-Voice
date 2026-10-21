@@ -1,4 +1,5 @@
-import { error, isHttpError, type RequestHandler } from '@sveltejs/kit';
+import { error, isHttpError, json, type RequestHandler } from '@sveltejs/kit';
+import { checkApproval } from '$lib/server/approvalGate.server';
 import { requireVoiceKey } from '$lib/server/auth';
 import { MAX_HERMES_REQUEST_CHARS, streamHermesChat } from '$lib/server/hermes';
 import { assertSameOrigin } from '$lib/server/origin.server';
@@ -26,6 +27,10 @@ export const POST: RequestHandler = async (event) => {
 	if (request.length > MAX_HERMES_REQUEST_CHARS) {
 		error(400, 'Request too large');
 	}
+
+	// Server-side approval backstop — answered as plain JSON before any SSE stream starts.
+	const approval = checkApproval(binding, request, body);
+	if (!approval.ok) return json(approval.payload, { status: approval.status });
 
 	const sessionId =
 		body && typeof body === 'object' && 'session_id' in body

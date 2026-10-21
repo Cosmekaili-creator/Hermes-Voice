@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { PageServerLoad } from './$types';
 import { getActiveProvider, getAsyncTasksEnabled } from '$lib/providers/active.server';
+import { approvalsMandatoryFor } from '$lib/server/approvalGate.server';
 import { grantSessionCookie, resolveBinding } from '$lib/server/auth';
 import { getSetupMode } from '$lib/server/setupMode.server';
 
@@ -25,6 +26,8 @@ export const load: PageServerLoad = async (event) => {
 		unlocked: binding !== null,
 		provider: getActiveProvider(),
 		isOwner: binding?.role === 'owner',
+		// Server enforces approvals for this binding — the Lounge can't switch them off.
+		approvalsMandatory: binding ? approvalsMandatoryFor(binding) : false,
 		setupMode: getSetupMode(),
 		asyncTasksEnabled: getAsyncTasksEnabled(),
 		// Opaque per-binding id for client-side storage scoping (timeline) — a hash, so the

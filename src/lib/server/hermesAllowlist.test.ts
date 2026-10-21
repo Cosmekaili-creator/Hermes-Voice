@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { isAllowedHermesHost, ipv4ToInt } from './hermesAllowlist';
+import {
+	isAllowedHermesHost,
+	isAllowedHermesTarget,
+	ipv4ToInt,
+	parseHermesTargetEntry
+} from './hermesAllowlist';
 
 describe('isAllowedHermesHost', () => {
 	it('allows loopback', () => {
@@ -45,5 +50,38 @@ describe('isAllowedHermesHost', () => {
 		const fixed = (n! & 0xffff0000) >>> 0 === 0xc0a80000;
 		expect(fixed).toBe(true);
 		expect(isAllowedHermesHost('192.168.1.1')).toBe(true);
+	});
+});
+
+describe('isAllowedHermesTarget', () => {
+	const allowed = new Set(['127.0.0.1:8642', '10.0.0.5:443', '::1:8643']);
+
+	it('matches host:port, folding localhost onto 127.0.0.1', () => {
+		expect(isAllowedHermesTarget('http://127.0.0.1:8642', allowed)).toBe(true);
+		expect(isAllowedHermesTarget('http://LOCALHOST:8642/', allowed)).toBe(true);
+		expect(isAllowedHermesTarget('http://[::1]:8643', allowed)).toBe(true);
+	});
+
+	it('uses the scheme default port when none is given', () => {
+		expect(isAllowedHermesTarget('https://10.0.0.5', allowed)).toBe(true);
+		expect(isAllowedHermesTarget('http://10.0.0.5', allowed)).toBe(false);
+		expect(isAllowedHermesTarget('https://10.0.0.5:443/v1', allowed)).toBe(true);
+	});
+
+	it('rejects other ports and hosts, even inside the host-class floor', () => {
+		expect(isAllowedHermesTarget('http://127.0.0.1:6379', allowed)).toBe(false);
+		expect(isAllowedHermesTarget('http://127.0.0.2:8642', allowed)).toBe(false);
+		expect(isAllowedHermesTarget('not a url', allowed)).toBe(false);
+	});
+});
+
+describe('parseHermesTargetEntry', () => {
+	it('accepts host:port, bracketed IPv6, bare host and full URLs', () => {
+		expect(parseHermesTargetEntry('localhost:8650')).toBe('127.0.0.1:8650');
+		expect(parseHermesTargetEntry(' [::1]:8650 ')).toBe('::1:8650');
+		expect(parseHermesTargetEntry('10.1.1.1')).toBe('10.1.1.1:80');
+		expect(parseHermesTargetEntry('https://10.1.1.1')).toBe('10.1.1.1:443');
+		expect(parseHermesTargetEntry('')).toBeNull();
+		expect(parseHermesTargetEntry('::::')).toBeNull();
 	});
 });

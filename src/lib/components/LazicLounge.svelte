@@ -31,12 +31,15 @@
 		provider,
 		isOwner = false,
 		asyncTasksEnabled = true,
+		approvalsMandatory = false,
 		timelineScope = null
 	}: {
 		persona?: VoicePersona;
 		provider?: ProviderId;
 		isOwner?: boolean;
 		asyncTasksEnabled?: boolean;
+		/** The server enforces approvals for this binding — the toggle is locked on. */
+		approvalsMandatory?: boolean;
 		timelineScope?: string | null;
 	} = $props();
 
@@ -73,7 +76,9 @@
 		}
 	}
 
-	let confirmActions = $state(browser ? readApprovalsEnabled() : true);
+	let confirmActions = $state(
+		untrack(() => approvalsMandatory) || (browser ? readApprovalsEnabled() : true)
+	);
 	let speechInTimeline = $state(readSpeechInTimeline());
 	let timelineOpen = $state(false);
 	let controlOpen = $state(false);
@@ -86,10 +91,12 @@
 		asyncTasksEnabled: untrack(() => asyncTasksEnabled),
 		timeline,
 		speechInTimeline: () => speechInTimeline,
-		approvalsEnabled: () => confirmActions
+		approvalsEnabled: () => confirmActions,
+		approvalsMandatory: untrack(() => approvalsMandatory)
 	});
 
 	function setConfirmActions(on: boolean) {
+		if (approvalsMandatory) return;
 		confirmActions = on;
 		writeApprovalsEnabled(on);
 	}
@@ -657,6 +664,7 @@
 		provider={demo.provider ?? provider ?? 'xai'}
 		{isOwner}
 		{confirmActions}
+		confirmActionsLocked={approvalsMandatory}
 		{speechInTimeline}
 		onClose={() => (controlOpen = false)}
 		onTalkMode={(m) => demo.setTalkMode(m)}

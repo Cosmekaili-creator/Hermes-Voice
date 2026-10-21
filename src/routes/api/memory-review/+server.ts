@@ -1,15 +1,20 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
 import { requireVoiceKey } from '$lib/server/auth';
 import { personaFromBinding } from '$lib/server/bindings.server';
-import { callHermesChat } from '$lib/server/hermes';
+import { streamHermesChat } from '$lib/server/hermes';
 import {
 	buildMemoryReviewPrompt,
+	MAX_REVIEW_BODY_BYTES,
 	MEMORY_REVIEW_SYSTEM_PROMPT,
 	MEMORY_REVIEW_TIMEOUT_MS,
-	sanitizeTranscriptTurns
+	reviewAllowedTools,
+	reviewTripwireMode,
+	sanitizeToolName,
+	sanitizeTranscriptTurns,
+	transcriptFingerprint
 } from '$lib/server/memoryReview.server';
 import { assertSameOrigin } from '$lib/server/origin.server';
-import { enforceRateLimit, RATE } from '$lib/server/rateLimit.server';
+import { enforcePrincipalRateLimit, enforceRateLimit, RATE } from '$lib/server/rateLimit.server';
 
 const MAX_CONCURRENT_REVIEWS_PER_BINDING = 2;
 
@@ -36,6 +41,31 @@ function endReview(bindingId: string): void {
 	}
 }
 
+/** How long an identical transcript is remembered, per binding (replay dedupe). */
+const REPLAY_WINDOW_MS = 24 * 60 * 60_000;
+const MAX_REPLAY_ENTRIES = 2_000;
+const recentReviews = new Map<string, number>();
+
+/** True when this binding already had this exact transcript reviewed inside the window. */
+function seenRecently(bindingId: string, fingerprint: string, now: number): boolean {
+	const expiresAt = recentReviews.get(`${bindingId}:${fingerprint}`);
+	return expiresAt !== undefined && expiresAt > now;
+}
+
+function rememberReview(bindingId: string, fingerprint: string, now: number): void {
+	if (recentReviews.size >= MAX_REPLAY_ENTRIES) {
+		for (const [k, exp] of recentReviews) {
+			if (exp <= now) recentReviews.delete(k);
+		}
+		// Still full of live entries: drop the oldest-inserted.
+		for (const k of recentReviews.keys()) {
+			if (recentReviews.size < MAX_REPLAY_ENTRIES) break;
+			recentReviews.delete(k);
+		}
+	}
+	recentReviews.set(`${bindingId}:${fingerprint}`, now + REPLAY_WINDOW_MS);
+}
+
 /**
  * Opt-in conversation-memory review (see VoicePersona.reviewConversationForMemory).
  * Mirrors /api/greeting's structure, with load-bearing differences:
@@ -55,15 +85,34 @@ function endReview(bindingId: string): void {
  * - Timeout is 90s (MEMORY_REVIEW_TIMEOUT_MS) — well above what a memory-tool round trip
  *   needs, safely under the shared 120s HERMES_TIMEOUT_MS, unlike greeting's tight 20s;
  *   nobody is waiting on this one.
+ * - Bounded per binding, not per address: a 256 KB body cap, a daily review ceiling, and
+ *   a 24 h replay dedupe (an identical transcript is acknowledged and ignored). The
+ *   review uses the streaming Hermes call so a tool tripwire can see which tools the
+ *   agent starts (see memoryReview.server.ts) — still write-only, reply discarded.
  *
- * Never logs transcript content — this route touches no logging at all beyond what
- * callHermesChat's own internals already do for HTTP-level failures (redacted, no body
- * echo). Also never touches the /api/debug/captions plaintext debug sink — unrelated
+ * Never logs transcript content — the only line this route logs is the tripwire's
+ * `tool_blocked` (binding id + sanitised tool name), beyond what the Hermes client's own
+ * internals already do for HTTP-level failures (redacted, no body echo). Also never touches the /api/debug/captions plaintext debug sink — unrelated
  * mechanism, no shared code path.
  */
 export const POST: RequestHandler = async (event) => {
 	assertSameOrigin(event);
-	const body = await event.request.json().catch(() => ({}));
+	// Size cap before the body is read (content-length), and again on what was actually
+	// read — a chunked request carries no content-length.
+	const declaredLength = Number(event.request.headers.get('content-length') ?? 0);
+	if (Number.isFinite(declaredLength) && declaredLength > MAX_REVIEW_BODY_BYTES) {
+		return json({ ok: false, code: 'payload_too_large' }, { status: 413 });
+	}
+	const rawBody = await event.request.text().catch(() => '');
+	if (Buffer.byteLength(rawBody, 'utf8') > MAX_REVIEW_BODY_BYTES) {
+		return json({ ok: false, code: 'payload_too_large' }, { status: 413 });
+	}
+	let body: unknown;
+	try {
+		body = rawBody ? JSON.parse(rawBody) : {};
+	} catch {
+		body = {};
+	}
 	const binding = await requireVoiceKey(event, body);
 	enforceRateLimit(
 		event,
@@ -88,9 +137,24 @@ export const POST: RequestHandler = async (event) => {
 		return json({ ok: false, code: 'transcript_unusable' }, { status: 400 });
 	}
 
+	// An identical transcript inside the window is acknowledged and ignored: a replayed
+	// request can't buy extra Hermes turns. Checked before the daily budget is spent.
+	const fingerprint = transcriptFingerprint(turns);
+	if (seenRecently(binding.id, fingerprint, Date.now())) {
+		return json({ ok: true }, { status: 202 });
+	}
+	enforcePrincipalRateLimit(
+		event,
+		'memoryReviewDaily',
+		RATE.memoryReviewDaily.limit,
+		RATE.memoryReviewDaily.windowMs,
+		binding.id
+	);
+
 	if (!beginReview(binding.id)) {
 		return json({ ok: false, code: 'review_busy' }, { status: 503 });
 	}
+	rememberReview(binding.id, fingerprint, Date.now());
 
 	const rawSessionId =
 		body && typeof body === 'object' && 'session_id' in body
@@ -104,8 +168,16 @@ export const POST: RequestHandler = async (event) => {
 	const reviewSessionId = `${rawSessionId || 'unknown'}:review`;
 
 	void (async () => {
+		// Own controller (not the HTTP request's signal — see above) so the review can be
+		// timed out, and cancelled by the tool tripwire.
+		const ac = new AbortController();
+		const timer = setTimeout(() => ac.abort(), MEMORY_REVIEW_TIMEOUT_MS);
+		const allowedTools = reviewAllowedTools();
+		const abortOnBlocked = reviewTripwireMode() === 'abort';
+		const safeBindingId = binding.id.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
+		const reported = new Set<string>();
 		try {
-			await callHermesChat({
+			await streamHermesChat({
 				request: buildMemoryReviewPrompt({
 					turns,
 					assistantName: persona.assistantName,
@@ -113,18 +185,29 @@ export const POST: RequestHandler = async (event) => {
 					locale: event.locals.locale
 				}),
 				sessionId: reviewSessionId,
+				signal: ac.signal,
 				hermesApiBase: binding.hermesApiBase,
 				hermesApiKey: binding.hermesApiKey,
 				hermesSessionKey: binding.hermesSessionKey,
-				timeoutMs: MEMORY_REVIEW_TIMEOUT_MS,
-				systemPrompt: MEMORY_REVIEW_SYSTEM_PROMPT
+				systemPrompt: MEMORY_REVIEW_SYSTEM_PROMPT,
+				onToolProgress: (progress) => {
+					const tool = sanitizeToolName(progress.tool);
+					if (allowedTools.has(tool)) return;
+					// Tool name only — never transcript or tool-argument content.
+					if (!reported.has(tool)) {
+						reported.add(tool);
+						console.log(`hv-memory-review tool_blocked binding=${safeBindingId} tool=${tool}`);
+					}
+					if (abortOnBlocked) ac.abort();
+				}
 			});
 		} catch {
 			// Swallowed — a failed background review must never surface as a request
 			// failure (the 202 response is already sent) and must never log transcript
-			// content; callHermesChat's own internals already log HTTP-level failures
+			// content; the Hermes client's own internals already log HTTP-level failures
 			// without echoing bodies.
 		} finally {
+			clearTimeout(timer);
 			endReview(binding.id);
 		}
 	})();

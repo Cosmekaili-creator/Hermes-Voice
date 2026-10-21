@@ -66,3 +66,42 @@ export function isAllowedHermesHost(hostname: string): boolean {
 	}
 	return false;
 }
+
+/**
+ * Canonical `host:port` key for a Hermes endpoint: lowercase host, IPv6 without brackets,
+ * default port from the scheme (80 / 443), `localhost` folded onto `127.0.0.1`.
+ */
+export function hermesTargetKey(url: URL): string {
+	let host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+	if (host === 'localhost') host = '127.0.0.1';
+	const port = url.port || (url.protocol === 'https:' ? '443' : '80');
+	return `${host}:${port}`;
+}
+
+/**
+ * Parse one allowlist entry (`host:port`, `[v6]:port`, or a full base URL) into its
+ * canonical key. A bare `host` means port 80. Returns null when it doesn't parse.
+ */
+export function parseHermesTargetEntry(entry: string): string | null {
+	const t = entry.trim();
+	if (!t) return null;
+	try {
+		return hermesTargetKey(new URL(t.includes('://') ? t : `http://${t}`));
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Explicit target allowlist on top of the host-class floor (`isAllowedHermesHost`): the
+ * base must be one of the configured `host:port` endpoints, so a loopback/RFC1918 base
+ * can't be pointed at an arbitrary local service (Redis, a database, a metadata proxy).
+ */
+export function isAllowedHermesTarget(url: string | URL, allowed: Set<string>): boolean {
+	try {
+		const u = typeof url === 'string' ? new URL(url) : url;
+		return allowed.has(hermesTargetKey(u));
+	} catch {
+		return false;
+	}
+}
