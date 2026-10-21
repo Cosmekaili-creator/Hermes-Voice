@@ -8,6 +8,7 @@ import type { HermesToolProgress } from '$lib/server/hermes';
 type StreamOpts = {
 	request: string;
 	signal?: AbortSignal;
+	timeoutMs?: number;
 	onToolProgress?: (p: HermesToolProgress) => void;
 };
 const streamHermesChat = vi.hoisted(() =>
@@ -18,6 +19,7 @@ vi.mock('$lib/server/hermes', async (importOriginal) => ({
 	streamHermesChat
 }));
 
+import { MEMORY_REVIEW_TIMEOUT_MS } from '$lib/server/memoryReview.server';
 import { POST } from './+server';
 
 const ORIGIN = 'http://localhost:5173';
@@ -143,6 +145,7 @@ describe('POST /api/memory-review hardening', () => {
 		await settle();
 		expect(streamHermesChat).toHaveBeenCalledTimes(1);
 		expect(streamHermesChat.mock.calls[0]![0].request).toContain('hiking in the Alps');
+		expect(streamHermesChat.mock.calls[0]![0].timeoutMs).toBe(MEMORY_REVIEW_TIMEOUT_MS);
 	});
 
 	it('413s on an oversized content-length before parsing', async () => {

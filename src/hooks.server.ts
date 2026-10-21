@@ -6,7 +6,10 @@ import { LOCALE_COOKIE, resolveRequestLocale } from '$lib/i18n/resolve';
 
 function setSecurityHeaders(response: Response): void {
 	response.headers.set('X-Content-Type-Options', 'nosniff');
-	response.headers.set('Referrer-Policy', 'no-referrer');
+	// Not `no-referrer`: some browsers then send `Origin: null` on non-GET requests, which
+	// assertSameOrigin (origin.server.ts) rejects with 403. `same-origin` sends no Referer
+	// cross-site, so `?k=` cannot leak to third parties, and our own server never logs it.
+	response.headers.set('Referrer-Policy', 'same-origin');
 	response.headers.set('X-Frame-Options', 'DENY');
 	// Allow microphone for this app (do not deny microphone=() on the reverse proxy either)
 	response.headers.set('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()');

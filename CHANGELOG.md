@@ -9,10 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **Server-side approval backstop** (`VOICE_APPROVALS_ENFORCE`, default `users`): for non-owner bindings `/api/tasks/dispatch` and `/api/hermes` now refuse a side-effecting or model-flagged brief until the request carries a short-lived, single-use token minted for exactly that brief (409 `approval_required`). The Lounge handles this automatically and locks its “Confirm actions” toggle on where it is enforced. No change for the owner by default.
+- **Server-side approval backstop** (`VOICE_APPROVALS_ENFORCE`, default `users`): for non-owner bindings `/api/tasks/dispatch` and `/api/hermes` now refuse a side-effecting or model-flagged brief until the request carries a short-lived, single-use token minted for exactly that brief (409 `approval_required`). The Lounge handles this automatically and locks its “Confirm actions” toggle on where it is enforced. No change for the owner by default. This is a backstop for a well-behaved client whose side-effect detection missed the request or whose toggle is off (i.e. a prompt-injected or forgetful voice model); it does not stop a hostile scripted client holding the voice key, since a 409 without a token hands out a valid one.
 - **Explicit Hermes target allowlist**: besides the loopback/private host check, Hermes calls only go to configured `host:port` targets (`HERMES_API_BASE`, binding bases, `HERMES_ALLOWED_TARGETS`); otherwise `base_not_allowlisted`.
 - **Failed voice keys / setup tokens are logged** as `hv-auth-fail ip=<addr> scope=key` (one line per rejected request, never the credential) so fail2ban can act on them.
-- `Referrer-Policy` is now `no-referrer`.
+- `Referrer-Policy` is now `same-origin` (no Referer is sent cross-site, so a `?k=` key cannot leak to third parties; `no-referrer` made some browsers send `Origin: null` on POSTs, which the same-origin check rejects).
 - **Memory review hardening**: 256 KB body cap, tighter caps on assistant text, a per-binding daily limit and 24 h replay dedupe, and a tool tripwire that logs (or, with `MEMORY_REVIEW_TOOL_TRIPWIRE=abort`, cancels) any tool other than `MEMORY_REVIEW_ALLOWED_TOOLS`.
 
 ## [0.9.0] — 2026-10-02

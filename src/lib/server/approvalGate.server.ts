@@ -7,11 +7,13 @@ import type { Binding } from '$lib/server/bindings.server';
 
 /**
  * Server-side backstop for action approvals. The Lounge already asks the human before it
- * dispatches a side-effecting brief, but that check lives in the browser — a modified
- * client (or a restricted user's own devtools) could skip it. For the roles the policy
- * covers, `/api/tasks/dispatch` and `/api/hermes` therefore refuse such a brief until the
- * request carries a short-lived, single-use token that the server minted for that exact
- * brief and binding.
+ * dispatches a side-effecting brief, but that check lives in the browser and can miss a
+ * request (its side-effect detection) or be switched off (the toggle). For the roles the
+ * policy covers, `/api/tasks/dispatch` and `/api/hermes` therefore refuse such a brief
+ * until the request carries a short-lived, single-use token that the server minted for
+ * that exact brief and binding. This catches a well-behaved client in those cases, i.e. a
+ * prompt-injected or forgetful voice model. It is NOT a defence against a hostile scripted
+ * client holding the voice key: a 409 without a token hands out a valid one.
  *
  * `VOICE_APPROVALS_ENFORCE`:
  *  - `users` (default): enforce for `role !== 'owner'`. Single-user mode is a synthetic

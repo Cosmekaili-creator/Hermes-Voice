@@ -82,9 +82,9 @@ function rememberReview(bindingId: string, fingerprint: string, now: number): vo
  *   general-purpose authenticated "send text, get an LLM reply" proxy, since (unlike
  *   greeting) this endpoint takes real client-supplied text as input. The reply is
  *   discarded entirely; the endpoint is write-only from the caller's perspective.
- * - Timeout is 90s (MEMORY_REVIEW_TIMEOUT_MS) — well above what a memory-tool round trip
- *   needs, safely under the shared 120s HERMES_TIMEOUT_MS, unlike greeting's tight 20s;
- *   nobody is waiting on this one.
+ * - Timeout is MEMORY_REVIEW_TIMEOUT_MS (also passed to streamHermesChat as `timeoutMs`, so
+ *   it overrides the shared HERMES_TIMEOUT_MS) — well above what a memory-tool round trip
+ *   needs, unlike greeting's tight 20s; nobody is waiting on this one.
  * - Bounded per binding, not per address: a 256 KB body cap, a daily review ceiling, and
  *   a 24 h replay dedupe (an identical transcript is acknowledged and ignored). The
  *   review uses the streaming Hermes call so a tool tripwire can see which tools the
@@ -186,6 +186,7 @@ export const POST: RequestHandler = async (event) => {
 				}),
 				sessionId: reviewSessionId,
 				signal: ac.signal,
+				timeoutMs: MEMORY_REVIEW_TIMEOUT_MS,
 				hermesApiBase: binding.hermesApiBase,
 				hermesApiKey: binding.hermesApiKey,
 				hermesSessionKey: binding.hermesSessionKey,

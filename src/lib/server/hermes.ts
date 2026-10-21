@@ -152,6 +152,8 @@ export async function streamHermesChat(opts: {
 	 * exposes (greeting/memory-review use it there; background tasks use it here). */
 	systemPrompt?: string;
 	onToolProgress?: (progress: HermesToolProgress) => void;
+	/** Defaults to the shared HERMES_TIMEOUT_MS. */
+	timeoutMs?: number;
 }): Promise<HermesChatResult> {
 	const { apiKey, sessionKey, target, request } = await resolveHermesTarget(opts);
 	const headers = hermesHeaders({
@@ -161,7 +163,7 @@ export async function streamHermesChat(opts: {
 		sessionId: opts.sessionId
 	});
 	const url = `${target.fetchBase}/v1/chat/completions`;
-	const timeout = AbortSignal.timeout(HERMES_TIMEOUT_MS);
+	const timeout = AbortSignal.timeout(opts.timeoutMs ?? HERMES_TIMEOUT_MS);
 	const signal =
 		opts.signal && typeof AbortSignal.any === 'function'
 			? AbortSignal.any([timeout, opts.signal])
